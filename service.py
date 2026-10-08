@@ -438,6 +438,27 @@ class AppDB:
                 (book_id, max(1, min(int(limit), 20))),
             ).fetchall()
         return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
+    def sources_with_missing_urls(self) -> list[Source]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT s.*, (SELECT COUNT(*) FROM articles a WHERE a.book_id=s.book_id) AS article_count
+                   FROM sources s WHERE s.enabled=1
+                     AND EXISTS (
+                       SELECT 1 FROM articles a WHERE a.book_id=s.book_id AND (a.url='' OR a.url IS NULL)
+                     )
+                   ORDER BY s.updated_at DESC"""
+            ).fetchall()
+        return [self._row_to_source(r) for r in rows]
+
+
+
+
+class _PartialBackfillError(Exception):
+    """Raised when backfill completes partially before hitting risk control."""
+    def __init__(self, resolved: int, failed: int):
+        self.resolved = resolved
+        self.failed = failed
+        super().__init__(f"Backfill interrupted: {resolved} resolved, {failed} failed")
 
 
 class SyncService:
@@ -554,24 +575,47 @@ class SyncService:
         source = self.db.get_source(source_id)
         if not source:
             raise FetcherError("公众号不存在")
-        missing = self.db.missing_url_articles(source.book_id, limit=limit)
-        if not missing:
-            return 0, 0
-        resolved = 0
-        failed = 0
-        for article in missing:
+        if not self._lock.acquire(blocking=False):
+            raise FetcherError("已有同步任务正在运行，请稍后再试")
+        try:
+            missing = self.db.missing_url_articles(source.book_id, limit=limit)
+            if not missing:
+                return 0, 0
+            resolved = 0
+            failed = 0
             try:
-                url = self._resolve_url_with_auto_refresh(article.review_id)
-                if url:
-                    self.db.set_article_url(article.review_id, url)
-                    resolved += 1
-                else:
-                    failed += 1
+                for article in missing:
+                    try:
+                        url = self._resolve_url_with_auto_refresh(article.review_id)
+                        if url:
+                            self.db.set_article_url(article.review_id, url)
+                            resolved += 1
+                        else:
+                            failed += 1
+                    except (RiskControlError, AuthExpiredError):
+                        raise
+                    except Exception:
+                        failed += 1
             except (RiskControlError, AuthExpiredError):
-                raise
-            except Exception:
-                failed += 1
-        return resolved, failed
+                raise _PartialBackfillError(resolved, failed)
+            return resolved, failed
+        finally:
+            self._lock.release()
+
+    def auto_backfill_once(self) -> dict[str, Any]:
+        """Run one round of auto-backfill: randomly pick one source and backfill up to 5 articles."""
+        import random
+        sources = self.db.sources_with_missing_urls()
+        if not sources:
+            return {"status": "empty", "resolved": 0, "failed": 0, "source_id": None}
+        source = random.choice(sources)
+        try:
+            resolved, failed = self.backfill_source_urls(source.id, limit=5)
+            return {"status": "ok", "resolved": resolved, "failed": failed, "source_id": source.id, "source_name": source.name}
+        except _PartialBackfillError as exc:
+            return {"status": "interrupted", "resolved": exc.resolved, "failed": exc.failed, "source_id": source.id, "source_name": source.name, "error": str(exc)}
+        except (RiskControlError, AuthExpiredError) as exc:
+            return {"status": "error", "resolved": 0, "failed": 0, "source_id": source.id, "source_name": source.name, "error": str(exc)}
 
     def feed_bytes(self, source_id: int, base_url: str = "") -> bytes:
         source = self.db.get_source(source_id)
@@ -588,6 +632,9 @@ class Scheduler:
         self.service = service
         self.poll_seconds = max(10, int(poll_seconds))
         self.enabled = self.db.get_setting("scheduler_enabled", "1") != "0"
+        self.backfill_enabled = self.db.get_setting("backfill_enabled", "0") == "1"
+        self._backfill_interval = int(self.db.get_setting("backfill_interval_minutes", "60"))
+        self._backfill_last_run = int(self.db.get_setting("backfill_last_run_at", "0"))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -601,6 +648,46 @@ class Scheduler:
     def stop(self) -> None:
         self._stop.set()
 
+    def set_backfill_enabled(self, enabled: bool) -> None:
+        self.backfill_enabled = enabled
+        self.db.set_setting("backfill_enabled", "1" if enabled else "0")
+
+    def set_backfill_interval(self, minutes: int) -> None:
+        self._backfill_interval = max(60, min(int(minutes), 10080))
+        self.db.set_setting("backfill_interval_minutes", str(self._backfill_interval))
+
+    @property
+    def backfill_interval(self) -> int:
+        return self._backfill_interval
+
+    @property
+    def backfill_last_result(self) -> str:
+        return self.db.get_setting("backfill_last_result", "")
+
+    def maybe_backfill(self) -> dict[str, Any] | None:
+        """Run a backfill round if enabled and interval has elapsed. Returns result or None."""
+        if not self.backfill_enabled:
+            return None
+        now = int(time.time())
+        if now - self._backfill_last_run < self._backfill_interval * 60:
+            return None
+        return self._do_backfill(now)
+
+    def _do_backfill(self, now: int) -> dict[str, Any]:
+        self._backfill_last_run = now
+        self.db.set_setting("backfill_last_run_at", str(now))
+        try:
+            result = self.service.auto_backfill_once()
+            import json
+            result["timestamp"] = now
+            self.db.set_setting("backfill_last_result", json.dumps(result, ensure_ascii=False))
+            return result
+        except Exception as exc:
+            import json
+            err_result = {"status": "error", "error": str(exc), "timestamp": now}
+            self.db.set_setting("backfill_last_result", json.dumps(err_result, ensure_ascii=False))
+            return err_result
+
     def _run(self) -> None:
         while not self._stop.is_set():
             if self.enabled and self.service.credentials.status()["configured"]:
@@ -610,6 +697,9 @@ class Scheduler:
                     try:
                         self.service.sync_source(source.id)
                     except Exception:
-                        # 单个任务不能让后台调度线程退出；具体同步错误由 SyncService 记录。
                         pass
+                try:
+                    self.maybe_backfill()
+                except Exception:
+                    pass
             self._stop.wait(self.poll_seconds)
