@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
+from datetime import datetime
 import os
 import sqlite3
 import threading
@@ -670,6 +672,101 @@ class SyncService:
             return {"status": "interrupted", "resolved": exc.resolved, "failed": exc.failed, "source_id": source.id, "source_name": source.name, "error": str(exc)}
         except (RiskControlError, AuthExpiredError) as exc:
             return {"status": "error", "resolved": 0, "failed": 0, "source_id": source.id, "source_name": source.name, "error": str(exc)}
+
+
+    def export_opml(self, base_url: str = "") -> str:
+        """Generate OPML 2.0 XML containing all sources."""
+        sources = self.db.list_sources()
+        
+        opml = ET.Element("opml", version="2.0")
+        head = ET.SubElement(opml, "head")
+        title_elem = ET.SubElement(head, "title")
+        title_elem.text = "WechRss Subscriptions"
+        date_created = ET.SubElement(head, "dateCreated")
+        date_created.text = datetime.now().strftime("%a, %d %b %Y %H:%M:%S GMT")
+        
+        body = ET.SubElement(opml, "body")
+        
+        for source in sources:
+            feed_url = f"{base_url.rstrip('/')}/feeds/{source.id}.xml" if base_url else f"/feeds/{source.id}.xml"
+            detail_url = f"{base_url.rstrip('/')}/sources/{source.id}" if base_url else f"/sources/{source.id}"
+            
+            outline = ET.SubElement(body, "outline")
+            outline.set("type", "rss")
+            outline.set("text", source.name or source.book_id)
+            outline.set("title", source.name or source.book_id)
+            outline.set("xmlUrl", feed_url)
+            outline.set("htmlUrl", detail_url)
+            outline.set("bookId", source.book_id)
+        
+        xml_str = ET.tostring(opml, encoding="unicode", xml_declaration=False)
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
+
+    def import_opml(self, opml_content: str) -> dict[str, int]:
+        """Parse OPML XML and create sources from outline entries.
+        
+        Returns dict with counts: imported, skipped, failed
+        """
+        import re
+        result = {"imported": 0, "skipped": 0, "failed": 0}
+        
+        try:
+            root = ET.fromstring(opml_content)
+        except ET.ParseError as exc:
+            raise FetcherError(f"OPML 文件解析失败：{exc}")
+        
+        if root.tag != "opml":
+            raise FetcherError("不是有效的 OPML 文件")
+        
+        body = root.find("body")
+        if body is None:
+            raise FetcherError("OPML 文件缺少 <body> 元素")
+        
+        for outline in body.findall("outline"):
+            try:
+                name = outline.get("text") or outline.get("title") or ""
+                book_id = outline.get("bookId") or ""
+                xml_url = outline.get("xmlUrl") or ""
+                
+                if not book_id and xml_url:
+                    match = re.search(r'/feeds/(\d+)\.xml', xml_url)
+                    if match:
+                        result["skipped"] += 1
+                        continue
+                
+                if not book_id:
+                    if name.startswith("MP_WXS_") or name.isdigit():
+                        book_id = name
+                    else:
+                        result["skipped"] += 1
+                        continue
+                
+                if book_id.isdigit():
+                    book_id = f"MP_WXS_{book_id}"
+                
+                existing = None
+                for src in self.db.list_sources():
+                    if src.book_id == book_id:
+                        existing = src
+                        break
+                
+                if existing:
+                    result["skipped"] += 1
+                    continue
+                
+                self.db.add_source(
+                    source_value=book_id,
+                    name=name if name != book_id else "",
+                    interval_minutes=360,
+                    fetch_content=False,
+                    rss_limit=50
+                )
+                result["imported"] += 1
+                
+            except Exception:
+                result["failed"] += 1
+        
+        return result
 
     def feed_bytes(self, source_id: int, base_url: str = "") -> bytes:
         source = self.db.get_source(source_id)
