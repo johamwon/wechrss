@@ -440,6 +440,27 @@ class AppDB:
         return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
 
 
+
+    def cleanup_old_articles(self, days: int = 90) -> int:
+        """Delete articles older than specified days.
+        
+        Args:
+            days: Delete articles older than this many days (default 90)
+        
+        Returns:
+            Number of articles deleted
+        """
+        cutoff = int(time.time()) - days * 24 * 3600
+        with self.connect() as conn:
+            result = conn.execute(
+                "DELETE FROM articles WHERE publish_at > 0 AND publish_at < ?",
+                (cutoff,)
+            )
+            deleted = result.rowcount
+            conn.commit()
+        return deleted
+
+
 class SyncService:
     def __init__(
         self,
