@@ -460,8 +460,54 @@ class _PartialBackfillError(Exception):
         self.failed = failed
         super().__init__(f"Backfill interrupted: {resolved} resolved, {failed} failed")
 
+    def search_articles(self, query: str, book_id: str | None = None, limit: int = 50) -> list[Article]:
+        """Search articles by title, summary, or content.
+        
+        Args:
+            query: Search query string
+            book_id: Optional filter by source book_id
+            limit: Maximum number of results (default 50, max 200)
+        
+        Returns:
+            List of matching articles ordered by relevance
+        """
+        if not query or not query.strip():
+            return []
+        
+        limit = max(1, min(int(limit), 200))
+        query = query.strip()
+        
+        # Build search pattern for LIKE queries
+        # Escape special characters and wrap with %
+        pattern = f"%{query.replace('%', '%%').replace('_', '__')}%"
+        
+        with self.connect() as conn:
+            if book_id:
+                # Search within specific source
+                rows = conn.execute(
+                    """SELECT review_id, book_id, title, summary, cover_url, url, publish_at, original_id,
+                              read_num, like_num, content_html, author
+                       FROM articles 
+                       WHERE book_id=? AND (title LIKE ? OR summary LIKE ? OR content_html LIKE ?)
+                       ORDER BY publish_at DESC LIMIT ?""",
+                    (book_id, pattern, pattern, pattern, limit),
+                ).fetchall()
+            else:
+                # Search across all sources
+                rows = conn.execute(
+                    """SELECT review_id, book_id, title, summary, cover_url, url, publish_at, original_id,
+                              read_num, like_num, content_html, author
+                       FROM articles 
+                       WHERE title LIKE ? OR summary LIKE ? OR content_html LIKE ?
+                       ORDER BY publish_at DESC LIMIT ?""",
+                    (pattern, pattern, pattern, limit),
+                ).fetchall()
+        
+        return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
+
 
 class SyncService:
+
     def __init__(
         self,
         db: AppDB,
