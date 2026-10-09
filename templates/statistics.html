@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}统计 · WeRSS{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <span class="eyebrow">数据分析</span>
+  <h1>统计仪表板</h1>
+  <p>查看订阅和同步的整体情况。</p>
+</section>
+
+<div class="metric-grid">
+  <article class="metric-card">
+    <span class="metric-icon green" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 4.5h12v12H4zM7 7h6M7 10h6M7 13h4"/></svg></span>
+    <div><strong>{{ stats.total_sources }}</strong><span>公众号总数</span></div>
+  </article>
+  <article class="metric-card">
+    <span class="metric-icon blue" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M5 3.5h8l3 3v10H5zM13 3.5v3h3M8 10h5M8 13h5"/></svg></span>
+    <div><strong>{{ stats.total_articles }}</strong><span>文章总数</span></div>
+  </article>
+  <article class="metric-card">
+    <span class="metric-icon amber" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6v4l3 2"/></svg></span>
+    <div><strong>{{ stats.recent_articles }}</strong><span>最近 7 天文章</span></div>
+  </article>
+  <article class="metric-card">
+    <span class="metric-icon violet" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 3v14h14M7 10l3-3 3 3 4-4"/></svg></span>
+    <div><strong>{{ "%.1f"|format(stats.success_rate) }}%</strong><span>同步成功率</span></div>
+  </article>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>热门公众号</h2><p>按文章数量排序的前 5 个公众号</p></div>
+  <div class="stats-list">
+    {% for source in stats.top_sources %}
+    <div class="stats-item">
+      <span class="stats-name">{{ source.name or source.book_id }}</span>
+      <span class="stats-value">{{ source.article_count }} 篇</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><h2>最近同步活动</h2><p>最近 10 次同步记录</p></div>
+  <div class="stats-list">
+    {% for sync in stats.recent_syncs %}
+    <div class="stats-item">
+      <span class="stats-name">{{ sync.name }}</span>
+      <span class="stats-badge {{ sync.status }}">{{ sync.status }}</span>
+      <span class="stats-value">{{ sync.new_count }} 篇新文章</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

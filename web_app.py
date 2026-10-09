@@ -283,7 +283,12 @@ class WebApp:
             if m and method == "GET":
                 source_id = int(m.group(1)); source = self.db.get_source(source_id)
                 if not source:
-                    return self._render(start_response, "error.html", status="404 Not Found", error="没有找到这个公众号订阅，它可能已经被删除。")
+        
+            if path == "/statistics" and method == "GET":
+                stats = self.db.get_statistics()
+                return self._render(start_response, "statistics.html", stats=stats)
+
+            return self._render(start_response, "error.html", status="404 Not Found", error="没有找到这个公众号订阅，它可能已经被删除。")
                 articles = self.db.get_articles(source.book_id, limit=source.rss_limit)
                 return self._render(
                     start_response, "source_detail.html", source=source, articles=articles,
