@@ -13,6 +13,10 @@ from typing import Any
 from weread_auth import WeReadAuthClient, WeReadAuthError, WeReadCredentials
 from article_identity import ArticleIdentityError, resolve_article_identity
 
+from logging_config import get_logger
+
+logger = get_logger("service")
+
 from wechat_mp_fetcher import (
     Article,
     AuthExpiredError,
@@ -505,6 +509,7 @@ class SyncService:
             raise FetcherError("公众号不存在")
         if not self._lock.acquire(blocking=False):
             raise FetcherError("已有同步任务正在运行，请稍后再试")
+        logger.info("Starting sync for source %d (%s)", source.id, source.name or source.book_id)
         run_id = self.db.mark_sync_start(source.id)
         try:
             try:
@@ -525,6 +530,8 @@ class SyncService:
             except Exception as exc:
                 result = SyncResult(source.id, 0, 0, 0, "error", str(exc))
             self.db.mark_sync_finish(source, run_id, result)
+            logger.info("Sync completed for source %d: status=%s, received=%d, new=%d", 
+                       source.id, result.status, result.received, result.new_count)
             return result
         finally:
             self._lock.release()

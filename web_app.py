@@ -21,6 +21,11 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from dotenv import load_dotenv
 
 from service import AppDB, CredentialStore, Scheduler, SyncService
+from logging_config import setup_logging, get_logger
+
+# Initialize logging
+setup_logging()
+logger = get_logger("web")
 from weread_auth import LoginManager, WeReadAuthClient
 from wechat_mp_fetcher import FetcherError
 
@@ -300,7 +305,9 @@ class WebApp:
             if m and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
                 source_id = int(m.group(1))
+                logger.info("Manual sync triggered for source %d", source_id)
                 result = self.service.sync_source(source_id)
+                logger.info("Sync completed for source %d: status=%s, new=%d", source_id, result.status, result.new_count)
                 if result.status == "ok":
                     msg = f"同步完成：收到 {result.received}，新增 {result.new_count}"
                     return self._redirect(start_response, f"/sources/{source_id}?message={quote(msg)}")
@@ -423,7 +430,7 @@ class WebApp:
                 return self._redirect(start_response, target + sep + "error=" + quote(str(exc)))
             return self._render(start_response, "error.html", status="400 Bad Request", error=str(exc))
         except Exception as exc:
-            print(f"[web-error] {exc}", file=sys.stderr)
+            logger.error("Web request error: %s", exc, exc_info=True)
             return self._render(start_response, "error.html", status="500 Internal Server Error", error=str(exc))
 
 
@@ -455,9 +462,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     app, scheduler = build_runtime()
     scheduler.start()
-    print(f"WeRSS Web: http://{args.host}:{args.port}")
+    logger.info("WeRSS Web starting on http://%s:%s", args.host, args.port)
     if not os.getenv("ADMIN_PASSWORD") and args.host not in {"127.0.0.1", "localhost", "::1"}:
-        print("[warning] ADMIN_PASSWORD 未设置；不要把无认证管理端暴露到公网。", file=sys.stderr)
+        logger.warning("ADMIN_PASSWORD 未设置；不要把无认证管理端暴露到公网")
     try:
         with make_server(args.host, args.port, app, server_class=ThreadingWSGIServer, handler_class=QuietHandler) as server:
             server.serve_forever()
