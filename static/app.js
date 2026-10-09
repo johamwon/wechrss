@@ -1,6 +1,42 @@
 (() => {
   "use strict";
 
+  // Theme switching
+  const themeToggle = document.querySelector("[data-theme-toggle]");
+  if (themeToggle) {
+    const savedTheme = localStorage.getItem("theme");
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const initialTheme = savedTheme || (prefersDark ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", initialTheme);
+    updateThemeToggleUI(initialTheme);
+
+    themeToggle.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme") || "light";
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("theme", next);
+      updateThemeToggleUI(next);
+    });
+
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+      if (!localStorage.getItem("theme")) {
+        const systemTheme = e.matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", systemTheme);
+        updateThemeToggleUI(systemTheme);
+      }
+    });
+  }
+
+  function updateThemeToggleUI(theme) {
+    const toggle = document.querySelector("[data-theme-toggle]");
+    if (!toggle) return;
+    const icon = toggle.querySelector("[data-theme-icon]");
+    if (icon) {
+      icon.textContent = theme === "dark" ? "☀️" : "🌙";
+    }
+    toggle.setAttribute("aria-label", theme === "dark" ? "切换到浅色模式" : "切换到深色模式");
+  }
+
   const toast = document.querySelector(".toast");
   let toastTimer;
 
