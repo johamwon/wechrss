@@ -516,6 +516,32 @@ class _PartialBackfillError(Exception):
         # Default: include if no rules matched
         return True
 
+    def create_backup(self, backup_path: Path | None = None) -> Path:
+        """Create a backup of the database using SQLite's backup API.
+        
+        Args:
+            backup_path: Optional path for the backup file. If None, generates
+                        a timestamped filename in the same directory as the original.
+        
+        Returns:
+            Path to the created backup file.
+        """
+        if backup_path is None:
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            backup_path = self.path.with_suffix(f".backup-{timestamp}.db")
+        
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Use SQLite's backup API for safe, consistent backup
+        with self.connect() as source_conn:
+            backup_conn = sqlite3.connect(str(backup_path))
+            try:
+                source_conn.backup(backup_conn)
+            finally:
+                backup_conn.close()
+        
+        return backup_path
+
 
 class SyncService:
     def __init__(
