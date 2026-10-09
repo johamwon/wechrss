@@ -401,10 +401,64 @@ class WebApp:
 
             if path == "/api/health" and method == "GET":
                 cs = self.credentials.status()
+                
+                # Database integrity check
+                integrity = self.db.check_integrity()
+                
+                # Database statistics
+                db_stats = self.db.get_stats()
+                
+                # Recent sync statistics
+                sync_stats = self.db.get_recent_sync_stats(hours=24)
+                
+                # Disk space check
+                import shutil
+                disk = shutil.disk_usage(self.db.path.parent)
+                disk_free_gb = round(disk.free / (1024**3), 2)
+                disk_total_gb = round(disk.total / (1024**3), 2)
+                disk_usage_percent = round((disk.used / disk.total) * 100, 2)
+                
+                # Overall health status
+                health_ok = (
+                    integrity["ok"] and
+                    cs["configured"] and
+                    disk_free_gb > 0.1  # At least 100MB free
+                )
+                
                 return self._json(start_response, {
-                    "ok": True, "time": int(time.time()), "scheduler": self.scheduler.enabled,
-                    "credentials": cs["configured"], "refreshable": cs["refreshable"],
-                    "login": self.login_manager.status().get("status", "idle"), "version": APP_VERSION,
+                    "ok": health_ok,
+                    "time": int(time.time()),
+                    "version": APP_VERSION,
+                    
+                    # Scheduler status
+                    "scheduler": self.scheduler.enabled,
+                    
+                    # Credentials status
+                    "credentials": {
+                        "configured": cs["configured"],
+                        "refreshable": cs["refreshable"],
+                        "login_status": self.login_manager.status().get("status", "idle"),
+                    },
+                    
+                    # Database health
+                    "database": {
+                        "integrity_ok": integrity["ok"],
+                        "integrity_errors": integrity["errors"],
+                        "size_bytes": db_stats["db_size_bytes"],
+                        "sources": db_stats["sources"],
+                        "articles": db_stats["articles"],
+                        "sync_runs": db_stats["sync_runs"],
+                    },
+                    
+                    # Sync performance
+                    "sync_24h": sync_stats,
+                    
+                    # Disk space
+                    "disk": {
+                        "free_gb": disk_free_gb,
+                        "total_gb": disk_total_gb,
+                        "usage_percent": disk_usage_percent,
+                    },
                 })
 
             if path == "/api/sources" and method == "GET":

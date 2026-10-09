@@ -27,6 +27,11 @@ def test_health_and_dashboard(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(web_app, "DATA_DIR", tmp_path)
     db = AppDB(tmp_path / "db.sqlite")
     creds = CredentialStore(tmp_path / "credentials.json")
+    # Configure credentials so health check returns ok=true
+    from weread_auth import WeReadCredentials
+    creds.save_record(WeReadCredentials(
+        vid="123", accessToken="token", refreshToken="refresh", deviceId="dev"
+    ))
     service = SyncService(db, creds)
     scheduler = Scheduler(db, service)
     app = web_app.WebApp(db, creds, service, scheduler)
@@ -34,6 +39,11 @@ def test_health_and_dashboard(tmp_path: Path, monkeypatch):
     assert meta["status"].startswith("200")
     assert b'"ok": true' in data
     assert f'"version": "{web_app.APP_VERSION}"'.encode("utf-8") in data
+    # Check new health check fields
+    assert b'"database"' in data
+    assert b'"integrity_ok": true' in data
+    assert b'"sync_24h"' in data
+    assert b'"disk"' in data
     assert meta["headers"]["X-Frame-Options"] == "DENY"
     meta, data = call_wsgi(app, "/")
     assert meta["status"].startswith("200")
