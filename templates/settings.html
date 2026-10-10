@@ -91,22 +91,20 @@
       </div>
     </section>
 
-    <section class="card settings-section" id="opml">
-      <div class="card-header"><div><h2>OPML 管理</h2><p>导出订阅列表用于备份，或从其他 RSS 工具导入</p></div></div>
+    <section class="card settings-section" id="backup">
+      <div class="card-header"><div><h2>数据备份</h2><p>备份数据库以保护你的订阅和配置数据</p></div></div>
       <div class="setting-row">
-        <div><strong>导出订阅</strong><p>将所有公众号订阅导出为 OPML 2.0 格式文件，可在其他 RSS 阅读器中导入。</p></div>
-        <a class="button primary" href="/settings/opml/export" download>导出 OPML</a>
+        <div><strong>下载数据库备份</strong><p>将所有订阅、文章元数据和设置导出为 SQLite 数据库文件。建议定期备份。</p></div>
+        <a class="button primary" href="/settings/backup" download>下载备份</a>
       </div>
       <div class="setting-row">
-        <div><strong>导入订阅</strong><p>上传 OPML 文件，批量添加公众号订阅。已存在的公众号会自动跳过。</p></div>
-        <form method="post" action="/settings/opml/import" enctype="multipart/form-data" class="inline-fields">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          <div class="field-group">
-            <label for="opml-file">选择 OPML 文件</label>
-            <input id="opml-file" name="opml_file" type="file" accept=".opml,.xml" required>
-          </div>
-          <button class="button" type="submit">导入</button>
-        </form>
+        <div><strong>备份说明</strong>
+          <p>
+            备份包含所有数据：公众号订阅、文章元数据、同步记录、应用设置。<br>
+            备份文件为 SQLite 数据库格式，可直接用 SQLite 工具打开。<br>
+            恢复时将备份文件替换 <code>data/wechat_mp.db</code> 并重启服务即可。
+          </p>
+        </div>
       </div>
     </section>
 

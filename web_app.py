@@ -412,47 +412,25 @@ class WebApp:
                 return self._redirect(start_response, "/settings?message=" + quote("调度器状态已更新"))
 
 
-            if path == "/settings/opml/export" and method == "GET":
-                opml_content = self.service.export_opml(self._base_url(environ))
-                body = opml_content.encode("utf-8")
-                start_response("200 OK", [
-                    ("Content-Type", "application/xml; charset=utf-8"),
-                    ("Content-Disposition", 'attachment; filename="wechrss-subscriptions.opml"'),
-                    ("Content-Length", str(len(body))),
-                ])
-                return [body]
-
-            if path == "/settings/opml/import" and method == "POST":
-                form = self._form(environ); self._require_csrf(form)
-                
-                # Handle file upload
-                content_type = environ.get("CONTENT_TYPE", "")
-                if "multipart/form-data" in content_type:
-                    # Parse multipart form data to get file content
-                    import cgi
-                    fs = cgi.FieldStorage(
-                        fp=environ["wsgi.input"],
-                        environ=environ,
-                        keep_blank_values=True
-                    )
-                    file_item = fs.get("opml_file")
-                    if file_item and file_item.file:
-                        opml_content = file_item.file.read().decode("utf-8")
-                    else:
-                        return self._redirect(start_response, "/settings?error=" + quote("未选择 OPML 文件") + "#opml")
-                else:
-                    # Fallback to form field
-                    opml_content = form.get("opml_content", "")
-                
-                if not opml_content.strip():
-                    return self._redirect(start_response, "/settings?error=" + quote("OPML 内容为空") + "#opml")
-                
+            if path == "/settings/backup" and method == "GET":
                 try:
-                    result = self.service.import_opml(opml_content)
-                    msg = f"导入完成：新增 {result['imported']}，跳过 {result['skipped']}，失败 {result['failed']}"
-                    return self._redirect(start_response, "/settings?message=" + quote(msg) + "#opml")
+                    backup_path = self.db.create_backup()
+                    # Read the backup file
+                    backup_data = backup_path.read_bytes()
+                    # Clean up the temporary backup file after reading
+                    backup_path.unlink()
+                    
+                    filename = f"wechrss-backup-{time.strftime('%Y%m%d-%H%M%S')}.db"
+                    start_response("200 OK", [
+                        ("Content-Type", "application/octet-stream"),
+                        ("Content-Disposition", f'attachment; filename="{filename}"'),
+                        ("Content-Length", str(len(backup_data))),
+                    ])
+                    logger.info("Database backup downloaded: %s", filename)
+                    return [backup_data]
                 except Exception as exc:
-                    return self._redirect(start_response, "/settings?error=" + quote(str(exc)) + "#opml")
+                    logger.error("Backup failed: %s", exc)
+                    return self._redirect(start_response, "/settings?error=" + quote(f"备份失败：{exc}") + "#backup")
 
             if path == "/api/login/status" and method == "GET":
                 return self._json(start_response, self.login_manager.status())
