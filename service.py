@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_sources_next_sync ON sources(enabled, next_sync_at);
 CREATE INDEX IF NOT EXISTS idx_sync_runs_source_started ON sync_runs(source_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_articles_book_id ON articles(book_id);
+CREATE INDEX IF NOT EXISTS idx_articles_publish_at ON articles(publish_at DESC);
+CREATE INDEX IF NOT EXISTS idx_articles_url ON articles(url);
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
