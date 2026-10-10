@@ -542,6 +542,68 @@ class _PartialBackfillError(Exception):
             conn.commit()
         return deleted
 
+    def check_integrity(self) -> dict[str, Any]:
+        """Check database integrity using PRAGMA quick_check.
+        
+        Returns:
+            Dict with 'ok' (bool) and 'errors' (list of str) keys.
+        """
+        with self.connect() as conn:
+            result = conn.execute("PRAGMA quick_check").fetchall()
+        
+        errors = [row[0] for row in result if row[0] != "ok"]
+        return {"ok": len(errors) == 0, "errors": errors}
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get database statistics.
+        
+        Returns:
+            Dict with counts and size information.
+        """
+        with self.connect() as conn:
+            source_count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+            article_count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+            sync_run_count = conn.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
+        
+        # Get database file size
+        db_size = self.path.stat().st_size if self.path.exists() else 0
+        
+        return {
+            "sources": source_count,
+            "articles": article_count,
+            "sync_runs": sync_run_count,
+            "db_size_bytes": db_size,
+        }
+
+    def get_recent_sync_stats(self, hours: int = 24) -> dict[str, Any]:
+        """Get sync statistics for the recent period.
+        
+        Args:
+            hours: Number of hours to look back (default 24).
+        
+        Returns:
+            Dict with total, success, failed counts and success rate.
+        """
+        cutoff = int(time.time()) - (hours * 3600)
+        with self.connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ?", (cutoff,)
+            ).fetchone()[0]
+            success = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ? AND status = 'ok'", (cutoff,)
+            ).fetchone()[0]
+        
+        failed = total - success
+        success_rate = (success / total * 100) if total > 0 else 100.0
+        
+        return {
+            "hours": hours,
+            "total": total,
+            "success": success,
+            "failed": failed,
+            "success_rate": round(success_rate, 2),
+        }
+
 
 class SyncService:
 
