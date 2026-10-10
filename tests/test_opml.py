@@ -1,10 +1,8 @@
 """Tests for OPML import/export feature."""
-from pathlib import Path
 
 import pytest
 
 from service import AppDB, CredentialStore, SyncService
-from wechat_mp_fetcher import Article, save_article
 
 
 def _setup_sources(tmp_path, count=3):

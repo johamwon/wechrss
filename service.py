@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -28,6 +31,8 @@ from wechat_mp_fetcher import (
     render_rss,
     save_article,
 )
+
+logger = logging.getLogger("wechrss.service")
 
 APP_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -64,6 +69,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    event_type TEXT NOT NULL DEFAULT 'all',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    last_triggered_at INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT NOT NULL DEFAULT 'never',
+    last_error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_webhooks_event ON webhooks(event_type, enabled);
 """
 
 
@@ -361,6 +377,23 @@ class AppDB:
                 conn.execute("DELETE FROM articles WHERE book_id=?", (source.book_id,))
             conn.commit()
 
+    def delete_sources_batch(self, source_ids: list[int]) -> int:
+        if not source_ids:
+            return 0
+        placeholders = ",".join("?" for _ in source_ids)
+        with self.connect() as conn:
+            book_ids = [r[0] for r in conn.execute(
+                f"SELECT book_id FROM sources WHERE id IN ({placeholders})", source_ids
+            ).fetchall()]
+            deleted = conn.execute(
+                f"DELETE FROM sources WHERE id IN ({placeholders})", source_ids
+            ).rowcount
+            if book_ids:
+                bp = ",".join("?" for _ in book_ids)
+                conn.execute(f"DELETE FROM articles WHERE book_id IN ({bp})", book_ids)
+            conn.commit()
+        return deleted
+
     def due_sources(self, now: int | None = None) -> list[Source]:
         now = int(now or time.time())
         with self.connect() as conn:
@@ -452,7 +485,128 @@ class AppDB:
             ).fetchall()
         return [self._row_to_source(r) for r in rows]
 
+    def list_webhooks(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM webhooks ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
 
+    def add_webhook(self, url: str, event_type: str = "all") -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO webhooks(url, event_type, created_at) VALUES(?, ?, ?)",
+                (url, event_type, int(time.time())),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def update_webhook(self, webhook_id: int, *, url: str | None = None, event_type: str | None = None, enabled: bool | None = None) -> None:
+        fields, values = [], []
+        if url is not None:
+            fields.append("url=?"); values.append(url)
+        if event_type is not None:
+            fields.append("event_type=?"); values.append(event_type)
+        if enabled is not None:
+            fields.append("enabled=?"); values.append(1 if enabled else 0)
+        if fields:
+            values.append(webhook_id)
+            with self.connect() as conn:
+                conn.execute(f"UPDATE webhooks SET {','.join(fields)} WHERE id=?", values)
+                conn.commit()
+
+    def delete_webhook(self, webhook_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM webhooks WHERE id=?", (webhook_id,))
+            conn.commit()
+
+    def record_webhook_trigger(self, webhook_id: int, success: bool, error: str = "") -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE webhooks SET last_triggered_at=?, last_status=?, last_error=? WHERE id=?",
+                (int(time.time()), "ok" if success else "failed", error, webhook_id),
+            )
+            conn.commit()
+
+    def search_articles(self, query: str, *, book_id: str | None = None, limit: int = 50) -> list[Article]:
+        query = query.strip()
+        if not query:
+            return []
+        limit = max(1, min(int(limit), 200))
+        like = f"%{query}%"
+        with self.connect() as conn:
+            if book_id:
+                rows = conn.execute(
+                    "SELECT * FROM articles WHERE (title LIKE ? OR summary LIKE ?) AND book_id=? ORDER BY publish_at DESC LIMIT ?",
+                    (like, like, book_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM articles WHERE title LIKE ? OR summary LIKE ? ORDER BY publish_at DESC LIMIT ?",
+                    (like, like, limit),
+                ).fetchall()
+        return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
+
+    def get_filter_rules(self, source_id: int) -> list[dict]:
+        rules_json = self.get_setting(f"filter_rules_{source_id}", "[]")
+        try:
+            return json.loads(rules_json)
+        except Exception:
+            return []
+
+    def set_filter_rules(self, source_id: int, rules: list[dict]) -> None:
+        self.set_setting(f"filter_rules_{source_id}", json.dumps(rules))
+
+    def matches_filter(self, article_title: str, rules: list[dict]) -> bool:
+        if not rules:
+            return True
+        for rule in rules:
+            pattern = rule.get("pattern", "")
+            rule_type = rule.get("type", "include")
+            try:
+                if re.search(pattern, article_title, re.IGNORECASE):
+                    return rule_type == "include"
+            except Exception:
+                continue
+        return True
+
+    def check_integrity(self) -> dict:
+        with self.connect() as conn:
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+        errors = [r[0] for r in rows if r[0] != "ok"]
+        return {"ok": len(errors) == 0, "errors": errors}
+
+    def get_stats(self) -> dict:
+        with self.connect() as conn:
+            sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+            articles = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+            sync_runs = conn.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
+        db_size = self.path.stat().st_size if self.path.exists() else 0
+        return {"sources": sources, "articles": articles, "sync_runs": sync_runs, "db_size_bytes": db_size}
+
+    def get_recent_sync_stats(self, hours: int = 24) -> dict:
+        cutoff = int(time.time()) - hours * 3600
+        with self.connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ?", (cutoff,)
+            ).fetchone()[0]
+            success = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ? AND status = 'ok'", (cutoff,)
+            ).fetchone()[0]
+        failed = total - success
+        rate = (success / total * 100) if total > 0 else 100.0
+        return {"hours": hours, "total": total, "success": success, "failed": failed, "success_rate": round(rate, 2)}
+
+    def create_backup(self, backup_path: Path | None = None) -> Path:
+        if backup_path is None:
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            backup_path = self.path.with_suffix(f".backup-{timestamp}.db")
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connect() as source_conn:
+            backup_conn = sqlite3.connect(str(backup_path))
+            try:
+                source_conn.backup(backup_conn)
+            finally:
+                backup_conn.close()
+        return backup_path
 
 
 class _PartialBackfillError(Exception):
@@ -461,86 +615,6 @@ class _PartialBackfillError(Exception):
         self.resolved = resolved
         self.failed = failed
         super().__init__(f"Backfill interrupted: {resolved} resolved, {failed} failed")
-
-
-
-    def get_filter_rules(self, source_id: int) -> list[dict]:
-        """Get filter rules for a source.
-        
-        Args:
-            source_id: Source ID
-        
-        Returns:
-            List of filter rule dictionaries
-        """
-        rules_json = self.get_setting(f"filter_rules_{source_id}", "[]")
-        try:
-            import json
-            return json.loads(rules_json)
-        except Exception:
-            return []
-    
-    def set_filter_rules(self, source_id: int, rules: list[dict]) -> None:
-        """Set filter rules for a source.
-        
-        Args:
-            source_id: Source ID
-            rules: List of filter rule dictionaries
-        """
-        import json
-        self.set_setting(f"filter_rules_{source_id}", json.dumps(rules))
-    
-    def matches_filter(self, article_title: str, rules: list[dict]) -> bool:
-        """Check if article matches filter rules.
-        
-        Args:
-            article_title: Article title to check
-            rules: List of filter rules
-        
-        Returns:
-            True if article matches (should be included)
-        """
-        if not rules:
-            return True
-        
-        for rule in rules:
-            pattern = rule.get("pattern", "")
-            rule_type = rule.get("type", "include")
-            
-            try:
-                if re.search(pattern, article_title, re.IGNORECASE):
-                    return rule_type == "include"
-            except Exception:
-                continue
-        
-        # Default: include if no rules matched
-        return True
-
-    def create_backup(self, backup_path: Path | None = None) -> Path:
-        """Create a backup of the database using SQLite's backup API.
-        
-        Args:
-            backup_path: Optional path for the backup file. If None, generates
-                        a timestamped filename in the same directory as the original.
-        
-        Returns:
-            Path to the created backup file.
-        """
-        if backup_path is None:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            backup_path = self.path.with_suffix(f".backup-{timestamp}.db")
-        
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Use SQLite's backup API for safe, consistent backup
-        with self.connect() as source_conn:
-            backup_conn = sqlite3.connect(str(backup_path))
-            try:
-                source_conn.backup(backup_conn)
-            finally:
-                backup_conn.close()
-        
-        return backup_path
 
 
 class SyncService:
@@ -628,9 +702,38 @@ class SyncService:
             except Exception as exc:
                 result = SyncResult(source.id, 0, 0, 0, "error", str(exc))
             self.db.mark_sync_finish(source, run_id, result)
+            if result.status == "ok" and result.new_count > 0:
+                self.notify_webhooks("new_articles", {
+                    "source_id": source.id,
+                    "source_name": source.name,
+                    "book_id": source.book_id,
+                    "new_count": result.new_count,
+                    "received": result.received,
+                })
             return result
         finally:
             self._lock.release()
+
+    def notify_webhooks(self, event: str, payload: dict) -> None:
+        webhooks = self.db.list_webhooks()
+        for wh in webhooks:
+            if not wh.get("enabled"):
+                continue
+            if wh.get("event_type", "all") not in ("all", event):
+                continue
+            try:
+                data = json.dumps({"event": event, **payload}, ensure_ascii=False).encode("utf-8")
+                req = urllib.request.Request(
+                    wh["url"], data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    success = 200 <= resp.status < 300
+                    self.db.record_webhook_trigger(wh["id"], success)
+            except Exception as exc:
+                logger.warning("Webhook %s failed: %s", wh["url"], exc)
+                self.db.record_webhook_trigger(wh["id"], False, str(exc))
 
     def _resolve_url_with_auto_refresh(self, review_id: str) -> str:
         record = self.credentials.get_record()

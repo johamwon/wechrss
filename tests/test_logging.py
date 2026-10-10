@@ -1,9 +1,6 @@
 """Tests for logging configuration."""
 import logging
-import os
-from pathlib import Path
 
-import pytest
 
 from logging_config import setup_logging, get_logger, JsonFormatter
 

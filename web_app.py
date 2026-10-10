@@ -5,6 +5,7 @@ import argparse
 import base64
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -30,6 +31,8 @@ DATA_DIR = Path(os.getenv("WECHAT_MP_DATA", str(BASE_DIR / "data"))).resolve()
 DB_PATH = Path(os.getenv("WECHAT_MP_DB", str(DATA_DIR / "wechat_mp.db"))).resolve()
 CREDENTIALS_PATH = Path(os.getenv("WECHAT_MP_CREDENTIALS", str(DATA_DIR / "credentials.json"))).resolve()
 APP_VERSION = (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+
+logger = logging.getLogger("wechrss.web")
 
 STATUS_LABELS = {
     "never": "待同步",
@@ -246,6 +249,8 @@ class WebApp:
                 asset = BASE_DIR / "static" / path.rsplit("/", 1)[-1]
                 data = asset.read_bytes()
                 content_type = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
+                if asset.suffix == ".js":
+                    content_type = "text/javascript"
                 if asset.suffix in {".css", ".js", ".svg"}:
                     content_type += "; charset=utf-8"
                 start_response("200 OK", [
@@ -284,11 +289,23 @@ class WebApp:
                     start_response, "source_detail.html", source=source, articles=articles,
                     runs=self.db.recent_runs(source_id, 20), message=query.get("message", ""), error=query.get("error", ""),
                     feed_url=self._base_url(environ) + f"/feeds/{source.id}.xml",
+                    filter_rules=self.db.get_filter_rules(source_id),
                 )
 
             if path == "/statistics" and method == "GET":
                 stats = self.db.get_statistics()
                 return self._render(start_response, "statistics.html", stats=stats)
+
+            if path == "/search" and method == "GET":
+                q = query.get("q", "").strip()
+                book_id_filter = query.get("book_id", "").strip() or None
+                articles = self.db.search_articles(q, book_id=book_id_filter) if q else []
+                if self._accepts_json(environ):
+                    return self._json(start_response, [{"title": a.title, "review_id": a.review_id} for a in articles])
+                return self._render(
+                    start_response, "search.html", query=q, articles=articles,
+                    book_id=book_id_filter or "",
+                )
 
             m = re.fullmatch(r"/sources/(\d+)/edit", path)
             if m and method == "POST":
@@ -335,6 +352,15 @@ class WebApp:
                 self.db.delete_source(source_id, delete_articles=form.get("delete_articles") == "1")
                 return self._redirect(start_response, "/?message=" + quote("公众号已删除"))
 
+            if path == "/sources/batch/delete" and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                raw_ids = form.get("source_ids", "")
+                ids = [int(x) for x in raw_ids.replace(",", " ").split() if x.strip().isdigit()]
+                if ids:
+                    deleted = self.db.delete_sources_batch(ids)
+                    return self._redirect(start_response, "/?message=" + quote(f"已删除 {deleted} 个订阅"))
+                return self._redirect(start_response, "/?error=" + quote("没有选择任何订阅"))
+
             m = re.fullmatch(r"/articles/([^/]+)", path)
             if m and method == "GET":
                 article = self.db.article_by_review(m.group(1))
@@ -377,6 +403,7 @@ class WebApp:
                     backfill_enabled=self.scheduler.backfill_enabled,
                     backfill_interval=self.scheduler.backfill_interval,
                     backfill_last_result=backfill_last_result,
+                    webhooks=self.db.list_webhooks(),
                 )
 
             if path == "/settings/login/start" and method == "POST":
@@ -411,6 +438,72 @@ class WebApp:
                 self.db.set_setting("scheduler_enabled", "1" if self.scheduler.enabled else "0")
                 return self._redirect(start_response, "/settings?message=" + quote("调度器状态已更新"))
 
+            if path == "/settings/backfill" and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                action = form.get("action", "toggle")
+                if action == "toggle":
+                    self.scheduler.set_backfill_enabled(not self.scheduler.backfill_enabled)
+                    return self._redirect(start_response, "/settings?message=" + quote("自动补全状态已更新") + "#backfill")
+                if action == "save":
+                    interval = int(form.get("interval_minutes") or 60)
+                    self.scheduler.set_backfill_interval(interval)
+                    return self._redirect(start_response, "/settings?message=" + quote("补全设置已保存") + "#backfill")
+                return self._redirect(start_response, "/settings#backfill")
+
+            if path == "/settings/webhooks" and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                url = form.get("url", "").strip()
+                event_type = form.get("event_type", "all").strip()
+                if not url:
+                    return self._redirect(start_response, "/settings?error=" + quote("Webhook URL 不能为空") + "#webhooks")
+                try:
+                    self.db.add_webhook(url, event_type)
+                    logger.info("Webhook added: %s", url)
+                    return self._redirect(start_response, "/settings?message=" + quote("Webhook 已添加") + "#webhooks")
+                except Exception as exc:
+                    logger.error("Failed to add webhook: %s", exc)
+                    return self._redirect(start_response, "/settings?error=" + quote(f"添加失败：{exc}") + "#webhooks")
+
+            m = re.fullmatch(r"/settings/webhooks/(\d+)/delete", path)
+            if m and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                webhook_id = int(m.group(1))
+                try:
+                    self.db.delete_webhook(webhook_id)
+                    logger.info("Webhook deleted: %d", webhook_id)
+                    return self._redirect(start_response, "/settings?message=" + quote("Webhook 已删除") + "#webhooks")
+                except Exception as exc:
+                    logger.error("Failed to delete webhook: %s", exc)
+                    return self._redirect(start_response, "/settings?error=" + quote(f"删除失败：{exc}") + "#webhooks")
+
+            m = re.fullmatch(r"/settings/webhooks/(\d+)/toggle", path)
+            if m and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                webhook_id = int(m.group(1))
+                webhooks = self.db.list_webhooks()
+                wh = next((w for w in webhooks if w["id"] == webhook_id), None)
+                if wh:
+                    self.db.update_webhook(webhook_id, enabled=not bool(wh.get("enabled")))
+                return self._redirect(start_response, "/settings?message=" + quote("Webhook 状态已更新") + "#webhooks")
+
+            m = re.fullmatch(r"/sources/(\d+)/filters", path)
+            if m and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                source_id = int(m.group(1))
+                patterns_raw = form.get("filter_patterns", "").strip()
+                rules = []
+                for line in patterns_raw.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("-"):
+                        rules.append({"type": "exclude", "pattern": line[1:].strip()})
+                    elif line.startswith("+"):
+                        rules.append({"type": "include", "pattern": line[1:].strip()})
+                    else:
+                        rules.append({"type": "include", "pattern": line})
+                self.db.set_filter_rules(source_id, rules)
+                return self._redirect(start_response, f"/sources/{source_id}?message={quote('过滤规则已保存')}")
 
             if path == "/settings/backup" and method == "GET":
                 try:
@@ -436,11 +529,24 @@ class WebApp:
                 return self._json(start_response, self.login_manager.status())
 
             if path == "/api/health" and method == "GET":
+                import shutil
                 cs = self.credentials.status()
+                integrity = self.db.check_integrity()
+                db_stats = self.db.get_stats()
+                sync_stats = self.db.get_recent_sync_stats(hours=24)
+                try:
+                    disk = shutil.disk_usage(str(DATA_DIR))
+                    disk_info = {"free_gb": round(disk.free / (1 << 30), 2), "total_gb": round(disk.total / (1 << 30), 2), "usage_percent": round(disk.used / disk.total * 100, 1)}
+                except Exception:
+                    disk_info = {"free_gb": 0, "total_gb": 0, "usage_percent": 0}
+                overall_ok = integrity["ok"] and cs["configured"]
                 return self._json(start_response, {
-                    "ok": True, "time": int(time.time()), "scheduler": self.scheduler.enabled,
-                    "credentials": cs["configured"], "refreshable": cs["refreshable"],
-                    "login": self.login_manager.status().get("status", "idle"), "version": APP_VERSION,
+                    "ok": overall_ok, "time": int(time.time()), "version": APP_VERSION,
+                    "scheduler": self.scheduler.enabled,
+                    "credentials": {"configured": cs["configured"], "refreshable": cs["refreshable"], "login_status": self.login_manager.status().get("status", "idle")},
+                    "database": {"integrity_ok": integrity["ok"], "integrity_errors": integrity["errors"], "size_bytes": db_stats["db_size_bytes"], "sources": db_stats["sources"], "articles": db_stats["articles"]},
+                    "sync_24h": sync_stats,
+                    "disk": disk_info,
                 })
 
             if path == "/api/sources" and method == "GET":

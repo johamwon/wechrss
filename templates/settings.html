@@ -12,7 +12,9 @@
     <a href="#login" class="active"><span>账号连接</span><small>{{ '已登录' if credential_status.configured else '未登录' }}</small></a>
     <a href="#scheduler"><span>自动同步</span><small>{{ '运行中' if scheduler_enabled else '已暂停' }}</small></a>
     <a href="#backfill"><span>自动补全</span><small>{{ '已开启' if backfill_enabled else '已关闭' }}</small></a>
+    <a href="#webhooks"><span>Webhook 推送</span><small>{{ webhooks|length ~ ' 个' if webhooks else '未配置' }}</small></a>
     <a href="#appearance"><span>外观</span></a>
+    <a href="#backup"><span>数据备份</span></a>
     <a href="#security"><span>部署安全</span></a>
   </aside>
 
@@ -88,6 +90,77 @@
       <div class="setting-row">
         <div><strong>后台调度器</strong><p>暂停后仍可在公众号详情页手动同步。最短间隔为 1 小时。</p></div>
         <form method="post" action="/settings/scheduler"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{{ '0' if scheduler_enabled else '1' }}"><button class="button {{ 'danger' if scheduler_enabled else 'primary' }}" type="submit">{{ '暂停自动同步' if scheduler_enabled else '恢复自动同步' }}</button></form>
+      </div>
+    </section>
+
+    <section class="card settings-section" id="backfill">
+      <div class="card-header"><div><h2>自动补全</h2><p>自动为缺少原文链接的文章补全 URL</p></div><span class="badge {{ 'ok' if backfill_enabled else 'paused' }}">{{ '已开启' if backfill_enabled else '已关闭' }}</span></div>
+      <div class="setting-row">
+        <div><strong>补全开关</strong><p>开启后系统会在后台自动为缺少链接的文章补全原文地址。每次最多处理 5 篇。</p></div>
+        <form method="post" action="/settings/backfill"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="toggle"><button class="button {{ 'danger' if backfill_enabled else 'primary' }}" type="submit">{{ '关闭自动补全' if backfill_enabled else '开启自动补全' }}</button></form>
+      </div>
+      {% if backfill_enabled %}
+      <div class="setting-row">
+        <div><strong>补全间隔</strong><p>两次自动补全之间的最短间隔（分钟）。当前间隔：{{ backfill_interval }} 分钟。</p></div>
+        <form method="post" action="/settings/backfill" class="inline-fields">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="action" value="save">
+          <input type="number" name="interval_minutes" min="60" max="10080" value="{{ backfill_interval }}" style="width:80px">
+          <button class="button" type="submit">保存</button>
+        </form>
+      </div>
+      {% endif %}
+      {% if backfill_last_result %}
+      <div class="setting-row">
+        <div><strong>上次补全结果</strong><p>{{ backfill_last_result.get('resolved', 0) if backfill_last_result is mapping else backfill_last_result }} 篇成功{% if backfill_last_result is mapping %}，{{ backfill_last_result.get('failed', 0) }} 篇失败{% endif %}</p></div>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="card settings-section" id="webhooks">
+      <div class="card-header"><div><h2>Webhook 推送</h2><p>当有新文章或同步事件时，向指定 URL 发送 HTTP POST 通知</p></div><span class="badge {{ 'ok' if webhooks else 'paused' }}">{{ webhooks|length ~ ' 个' if webhooks else '未配置' }}</span></div>
+      <div class="setting-row">
+        <div><strong>添加 Webhook</strong><p>填写接收通知的 URL。事件类型选择要监听的事件，或选「全部」接收所有通知。</p></div>
+        <form method="post" action="/settings/webhooks" class="inline-fields">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="url" name="url" required placeholder="https://example.com/webhook" style="min-width:260px">
+          <select name="event_type">
+            <option value="all">全部事件</option>
+            <option value="new_articles">新文章</option>
+            <option value="sync_error">同步失败</option>
+          </select>
+          <button class="button primary" type="submit">添加</button>
+        </form>
+      </div>
+      {% if webhooks %}
+      <div class="setting-row">
+        <div><strong>已配置的 Webhook</strong></div>
+      </div>
+      <div class="security-list">
+        {% for wh in webhooks %}
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);">
+          <span class="security-icon {{ 'ok' if wh.enabled else '' }}" aria-hidden="true">{{ '✓' if wh.enabled else '–' }}</span>
+          <div style="flex:1;min-width:0;">
+            <strong style="word-break:break-all;">{{ wh.url }}</strong>
+            <p>事件：{{ '全部' if wh.event_type == 'all' else wh.event_type }} · 状态：{{ status_label(wh.last_status) if wh.last_status != 'never' else '未触发' }}{% if wh.last_triggered_at %} · 上次：{{ fmt_relative_ts(wh.last_triggered_at) }}{% endif %}</p>
+            {% if wh.last_error %}<p style="color:var(--danger,#c00);font-size:0.85em;">{{ wh.last_error }}</p>{% endif %}
+          </div>
+          <form method="post" action="/settings/webhooks/{{ wh.id }}/toggle"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button small" type="submit">{{ '禁用' if wh.enabled else '启用' }}</button></form>
+          <form method="post" action="/settings/webhooks/{{ wh.id }}/delete" data-confirm="确定删除这个 Webhook 吗？"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button small danger" type="submit">删除</button></form>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="card settings-section" id="appearance">
+      <div class="card-header"><div><h2>外观</h2><p>自定义界面显示偏好</p></div></div>
+      <div class="setting-row">
+        <div><strong>深色模式</strong><p>点击切换明暗外观，或跟随系统自动调整。偏好会保存在浏览器中。</p></div>
+        <button class="button" type="button" data-theme-toggle>
+          <span data-theme-icon aria-hidden="true">◑</span>
+          切换主题
+        </button>
       </div>
     </section>
 
