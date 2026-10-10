@@ -12,6 +12,7 @@
     <a href="#login" class="active"><span>账号连接</span><small>{{ '已登录' if credential_status.configured else '未登录' }}</small></a>
     <a href="#scheduler"><span>自动同步</span><small>{{ '运行中' if scheduler_enabled else '已暂停' }}</small></a>
     <a href="#backfill"><span>自动补全</span><small>{{ '已开启' if backfill_enabled else '已关闭' }}</small></a>
+    <a href="#appearance"><span>外观</span></a>
     <a href="#security"><span>部署安全</span></a>
   </aside>
 
@@ -131,6 +132,17 @@
         </div>
       </div>
       {% endif %}
+    </section>
+
+    <section class="card settings-section" id="appearance">
+      <div class="card-header"><div><h2>外观</h2><p>选择适合你的显示模式</p></div></div>
+      <div class="setting-row">
+        <div><strong>深色模式</strong><p>自动跟随系统设置，或手动切换。偏好会保存在本地。</p></div>
+        <button class="button" type="button" data-theme-toggle aria-label="切换到深色模式">
+          <span data-theme-icon>🌙</span>
+          <span>切换主题</span>
+        </button>
+      </div>
     </section>
 
     <section class="card settings-section" id="security">
