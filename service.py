@@ -462,45 +462,57 @@ class _PartialBackfillError(Exception):
 
 
 
-    def get_webhook_url(self) -> str:
-        """Get the configured webhook URL."""
-        return self.get_setting("webhook_url", "")
-    
-    def set_webhook_url(self, url: str) -> None:
-        """Set the webhook URL."""
-        self.set_setting("webhook_url", url.strip())
-    
-    def send_webhook_notification(self, event: str, data: dict) -> bool:
-        """Send a webhook notification.
+    def get_filter_rules(self, source_id: int) -> list[dict]:
+        """Get filter rules for a source.
         
         Args:
-            event: Event type (e.g., "new_articles", "sync_complete")
-            data: Event data to send
+            source_id: Source ID
         
         Returns:
-            True if notification was sent successfully
+            List of filter rule dictionaries
         """
-        webhook_url = self.get_webhook_url()
-        if not webhook_url:
-            return False
-        
-        payload = {
-            "event": event,
-            "timestamp": int(time.time()),
-            "data": data
-        }
-        
+        rules_json = self.get_setting(f"filter_rules_{source_id}", "[]")
         try:
-            req = urllib.request.Request(
-                webhook_url,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
-                return response.status == 200
+            import json
+            return json.loads(rules_json)
         except Exception:
-            return False
+            return []
+    
+    def set_filter_rules(self, source_id: int, rules: list[dict]) -> None:
+        """Set filter rules for a source.
+        
+        Args:
+            source_id: Source ID
+            rules: List of filter rule dictionaries
+        """
+        import json
+        self.set_setting(f"filter_rules_{source_id}", json.dumps(rules))
+    
+    def matches_filter(self, article_title: str, rules: list[dict]) -> bool:
+        """Check if article matches filter rules.
+        
+        Args:
+            article_title: Article title to check
+            rules: List of filter rules
+        
+        Returns:
+            True if article matches (should be included)
+        """
+        if not rules:
+            return True
+        
+        for rule in rules:
+            pattern = rule.get("pattern", "")
+            rule_type = rule.get("type", "include")
+            
+            try:
+                if re.search(pattern, article_title, re.IGNORECASE):
+                    return rule_type == "include"
+            except Exception:
+                continue
+        
+        # Default: include if no rules matched
+        return True
 
 
 class SyncService:
