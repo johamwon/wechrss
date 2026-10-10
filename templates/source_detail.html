@@ -106,6 +106,22 @@
   </div>
 </details>
 
+<details class="card settings-card">
+  <summary><span><strong>过滤规则</strong><small>按标题关键词过滤文章</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg></summary>
+  <div class="settings-content">
+    <form method="post" action="/sources/{{ source.id }}/filters">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="field-group">
+        <label for="filter-patterns">过滤规则（每行一条）</label>
+        <textarea id="filter-patterns" name="filter_patterns" rows="6" placeholder="+ 包含关键词（必须匹配才收录）&#10;- 排除关键词（匹配则跳过）&#10;&#10;示例：&#10;+ AI&#10;+ 大模型&#10;- 广告&#10;- 推广">{% for rule in filter_rules %}{{ '+' if rule.type == 'include' else '-' }} {{ rule.pattern }}
+{% endfor %}</textarea>
+        <p class="field-help">以 <code>+</code> 开头表示仅收录匹配的文章，以 <code>-</code> 开头表示排除匹配的文章。留空表示不过滤。</p>
+      </div>
+      <button class="button" type="submit">保存过滤规则</button>
+    </form>
+  </div>
+</details>
+
 {% if runs %}
 <details class="card settings-card">
   <summary><span><strong>同步记录</strong><small>最近 {{ runs|length }} 次任务</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg></summary>

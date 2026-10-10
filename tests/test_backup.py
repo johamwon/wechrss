@@ -1,11 +1,8 @@
 """Tests for database backup feature."""
 import sqlite3
-import time
-from pathlib import Path
 
-import pytest
 
-from service import AppDB, CredentialStore, SyncService
+from service import AppDB
 from wechat_mp_fetcher import Article, save_article
 
 
@@ -55,8 +52,8 @@ class TestDatabaseBackup:
         db = AppDB(tmp_path / "db.sqlite")
         
         # Add sources
-        s1 = db.add_source(source_value="MP_WXS_100", name="号1")
-        s2 = db.add_source(source_value="MP_WXS_200", name="号2")
+        s1 = db.add_source(source_value="MP_WXS_100", name="号1")  # noqa: F841
+        s2 = db.add_source(source_value="MP_WXS_200", name="号2")  # noqa: F841
         
         # Add articles
         with db.connect() as conn:
@@ -95,13 +92,13 @@ class TestDatabaseBackup:
         db = AppDB(tmp_path / "db.sqlite")
         
         # Add initial data
-        s1 = db.add_source(source_value="MP_WXS_100", name="号1")
+        s1 = db.add_source(source_value="MP_WXS_100", name="号1")  # noqa: F841
         
         # Create backup
         backup_path = db.create_backup()
         
         # Add more data after backup
-        s2 = db.add_source(source_value="MP_WXS_200", name="号2")
+        s2 = db.add_source(source_value="MP_WXS_200", name="号2")  # noqa: F841
         
         # Verify backup only contains initial data
         conn = sqlite3.connect(str(backup_path))

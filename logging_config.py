@@ -58,7 +58,6 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         import json
-        import time
 
         log_entry = {
             "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),

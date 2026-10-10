@@ -1,10 +1,9 @@
 """Tests for enhanced health check functionality."""
 import time
-from pathlib import Path
 
 import pytest
 
-from service import AppDB, CredentialStore, SyncService, Source
+from service import AppDB, CredentialStore, SyncService
 from wechat_mp_fetcher import Article, save_article
 
 
@@ -12,7 +11,7 @@ class TestDatabaseIntegrity:
     def test_check_integrity_healthy_database(self, tmp_path):
         """Integrity check passes for healthy database."""
         db = AppDB(tmp_path / "db.sqlite")
-        source = db.add_source(source_value="MP_WXS_100", name="测试号")
+        source = db.add_source(source_value="MP_WXS_100", name="测试号")  # noqa: F841
         
         result = db.check_integrity()
         
