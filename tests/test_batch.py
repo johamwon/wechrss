@@ -1,5 +1,4 @@
 """Tests for batch operations functionality."""
-import pytest
 from pathlib import Path
 from service import AppDB, SyncService, CredentialStore, Scheduler
 
@@ -10,7 +9,7 @@ def test_delete_sources_batch(tmp_path: Path):
     
     # Create test sources
     source1 = db.add_source(source_value="MP_WXS_123", name="Test 1")
-    source2 = db.add_source(source_value="MP_WXS_456", name="Test 2")
+    source2 = db.add_source(source_value="MP_WXS_456", name="Test 2")  # noqa: F841
     source3 = db.add_source(source_value="MP_WXS_789", name="Test 3")
     
     # Verify sources exist
@@ -33,7 +32,7 @@ def test_delete_sources_batch_empty_list(tmp_path: Path):
     db = AppDB(tmp_path / "db.sqlite")
     
     # Create test source
-    source = db.add_source(source_value="MP_WXS_123", name="Test")
+    source = db.add_source(source_value="MP_WXS_123", name="Test")  # noqa: F841
     
     # Delete with empty list
     deleted = db.delete_sources_batch([])
@@ -47,7 +46,7 @@ def test_delete_sources_batch_nonexistent_ids(tmp_path: Path):
     db = AppDB(tmp_path / "db.sqlite")
     
     # Create test source
-    source = db.add_source(source_value="MP_WXS_123", name="Test")
+    source = db.add_source(source_value="MP_WXS_123", name="Test")  # noqa: F841
     
     # Delete non-existent IDs
     deleted = db.delete_sources_batch([999, 1000])
@@ -62,7 +61,7 @@ def test_delete_sources_batch_mixed_ids(tmp_path: Path):
     
     # Create test sources
     source1 = db.add_source(source_value="MP_WXS_123", name="Test 1")
-    source2 = db.add_source(source_value="MP_WXS_456", name="Test 2")
+    source2 = db.add_source(source_value="MP_WXS_456", name="Test 2")  # noqa: F841
     
     # Delete with mix of valid and invalid IDs
     deleted = db.delete_sources_batch([source1.id, 999])
@@ -86,7 +85,7 @@ def test_batch_delete_route_requires_csrf(tmp_path: Path):
     app = WebApp(db, creds, service, scheduler)
     
     # Create test source
-    source = db.add_source(source_value="MP_WXS_123", name="Test")
+    source = db.add_source(source_value="MP_WXS_123", name="Test")  # noqa: F841
     
     # Try to delete without CSRF
     environ = {
@@ -103,7 +102,7 @@ def test_batch_delete_route_requires_csrf(tmp_path: Path):
     def start_response(status, headers):
         status_captured.append(status)
     
-    result = app(environ, start_response)
+    result = app(environ, start_response)  # noqa: F841
     
     # Should fail due to missing CSRF
     assert status_captured[0].startswith("303")
@@ -121,7 +120,7 @@ def test_batch_delete_route_with_valid_csrf(tmp_path: Path):
     
     # Create test sources
     source1 = db.add_source(source_value="MP_WXS_123", name="Test 1")
-    source2 = db.add_source(source_value="MP_WXS_456", name="Test 2")
+    source2 = db.add_source(source_value="MP_WXS_456", name="Test 2")  # noqa: F841
     
     # Get CSRF token
     csrf_token = app.csrf_token
@@ -142,7 +141,7 @@ def test_batch_delete_route_with_valid_csrf(tmp_path: Path):
     def start_response(status, headers):
         status_captured.append(status)
     
-    result = app(environ, start_response)
+    result = app(environ, start_response)  # noqa: F841
     
     # Should succeed with redirect
     assert status_captured[0].startswith("303")
