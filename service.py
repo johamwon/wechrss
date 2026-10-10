@@ -13,10 +13,6 @@ from typing import Any
 from weread_auth import WeReadAuthClient, WeReadAuthError, WeReadCredentials
 from article_identity import ArticleIdentityError, resolve_article_identity
 
-from logging_config import get_logger
-
-logger = get_logger("service")
-
 from wechat_mp_fetcher import (
     Article,
     AuthExpiredError,
@@ -62,22 +58,10 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_sources_next_sync ON sources(enabled, next_sync_at);
 CREATE INDEX IF NOT EXISTS idx_sync_runs_source_started ON sync_runs(source_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_articles_book_id ON articles(book_id);
-CREATE INDEX IF NOT EXISTS idx_articles_publish_at ON articles(publish_at DESC);
-CREATE INDEX IF NOT EXISTS idx_articles_url ON articles(url);
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user',
-    created_at INTEGER NOT NULL,
-    last_login_at INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 """
 
 
@@ -375,31 +359,6 @@ class AppDB:
                 conn.execute("DELETE FROM articles WHERE book_id=?", (source.book_id,))
             conn.commit()
 
-
-    def delete_sources_batch(self, source_ids: list[int]) -> int:
-        """Delete multiple sources at once.
-        
-        Args:
-            source_ids: List of source IDs to delete
-        
-        Returns:
-            Number of sources deleted
-        """
-        if not source_ids:
-            return 0
-        
-        deleted = 0
-        with self.connect() as conn:
-            for source_id in source_ids:
-                # Check if source exists
-                row = conn.execute("SELECT id FROM sources WHERE id=?", (source_id,)).fetchone()
-                if row:
-                    conn.execute("DELETE FROM sources WHERE id=?", (source_id,))
-                    deleted += 1
-            conn.commit()
-        return deleted
-
-
     def due_sources(self, now: int | None = None) -> list[Source]:
         now = int(now or time.time())
         with self.connect() as conn:
@@ -491,51 +450,6 @@ class AppDB:
             ).fetchall()
         return [self._row_to_source(r) for r in rows]
 
-    def search_articles(self, query: str, book_id: str | None = None, limit: int = 50) -> list[Article]:
-        """Search articles by title, summary, or content.
-        
-        Args:
-            query: Search query string
-            book_id: Optional filter by source book_id
-            limit: Maximum number of results (default 50, max 200)
-        
-        Returns:
-            List of matching articles ordered by relevance
-        """
-        if not query or not query.strip():
-            return []
-        
-        limit = max(1, min(int(limit), 200))
-        query = query.strip()
-        
-        # Build search pattern for LIKE queries
-        # Escape special characters and wrap with %
-        pattern = f"%{query.replace('%', '%%').replace('_', '__')}%"
-        
-        with self.connect() as conn:
-            if book_id:
-                # Search within specific source
-                rows = conn.execute(
-                    """SELECT review_id, book_id, title, summary, cover_url, url, publish_at, original_id,
-                              read_num, like_num, content_html, author
-                       FROM articles 
-                       WHERE book_id=? AND (title LIKE ? OR summary LIKE ? OR content_html LIKE ?)
-                       ORDER BY publish_at DESC LIMIT ?""",
-                    (book_id, pattern, pattern, pattern, limit),
-                ).fetchall()
-            else:
-                # Search across all sources
-                rows = conn.execute(
-                    """SELECT review_id, book_id, title, summary, cover_url, url, publish_at, original_id,
-                              read_num, like_num, content_html, author
-                       FROM articles 
-                       WHERE title LIKE ? OR summary LIKE ? OR content_html LIKE ?
-                       ORDER BY publish_at DESC LIMIT ?""",
-                    (pattern, pattern, pattern, limit),
-                ).fetchall()
-        
-        return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
-
 
 
 
@@ -548,90 +462,78 @@ class _PartialBackfillError(Exception):
 
 
 
-    def cleanup_old_articles(self, days: int = 90) -> int:
-        """Delete articles older than specified days.
-        
-        Args:
-            days: Delete articles older than this many days (default 90)
+    def get_statistics(self) -> dict:
+        """Get comprehensive statistics for the dashboard.
         
         Returns:
-            Number of articles deleted
-        """
-        cutoff = int(time.time()) - days * 24 * 3600
-        with self.connect() as conn:
-            result = conn.execute(
-                "DELETE FROM articles WHERE publish_at > 0 AND publish_at < ?",
-                (cutoff,)
-            )
-            deleted = result.rowcount
-            conn.commit()
-        return deleted
-
-    def check_integrity(self) -> dict[str, Any]:
-        """Check database integrity using PRAGMA quick_check.
-        
-        Returns:
-            Dict with 'ok' (bool) and 'errors' (list of str) keys.
+            Dictionary with various statistics
         """
         with self.connect() as conn:
-            result = conn.execute("PRAGMA quick_check").fetchall()
-        
-        errors = [row[0] for row in result if row[0] != "ok"]
-        return {"ok": len(errors) == 0, "errors": errors}
-
-    def get_stats(self) -> dict[str, Any]:
-        """Get database statistics.
-        
-        Returns:
-            Dict with counts and size information.
-        """
-        with self.connect() as conn:
-            source_count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-            article_count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-            sync_run_count = conn.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
-        
-        # Get database file size
-        db_size = self.path.stat().st_size if self.path.exists() else 0
+            # Total sources
+            total_sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+            active_sources = conn.execute("SELECT COUNT(*) FROM sources WHERE enabled=1").fetchone()[0]
+            
+            # Total articles
+            total_articles = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+            
+            # Articles in last 7 days
+            seven_days_ago = int(time.time()) - 7 * 24 * 3600
+            recent_articles = conn.execute(
+                "SELECT COUNT(*) FROM articles WHERE publish_at > ?", (seven_days_ago,)
+            ).fetchone()[0]
+            
+            # Sync runs statistics
+            total_syncs = conn.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
+            successful_syncs = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE status='success'"
+            ).fetchone()[0]
+            
+            # Total articles received
+            total_received = conn.execute(
+                "SELECT COALESCE(SUM(received), 0) FROM sync_runs"
+            ).fetchone()[0]
+            
+            # Average sync duration
+            avg_duration = conn.execute(
+                """SELECT AVG(finished_at - started_at) FROM sync_runs 
+                   WHERE status='success' AND finished_at > 0"""
+            ).fetchone()[0] or 0
+            
+            # Top sources by article count
+            top_sources = conn.execute(
+                """SELECT s.name, s.book_id, COUNT(a.review_id) as article_count
+                   FROM sources s
+                   LEFT JOIN articles a ON s.book_id = a.book_id
+                   GROUP BY s.id
+                   ORDER BY article_count DESC
+                   LIMIT 5"""
+            ).fetchall()
+            
+            # Recent sync activity (last 10)
+            recent_syncs = conn.execute(
+                """SELECT s.name, sr.status, sr.received, sr.new_count, sr.started_at
+                   FROM sync_runs sr
+                   JOIN sources s ON sr.source_id = s.id
+                   ORDER BY sr.started_at DESC
+                   LIMIT 10"""
+            ).fetchall()
         
         return {
-            "sources": source_count,
-            "articles": article_count,
-            "sync_runs": sync_run_count,
-            "db_size_bytes": db_size,
-        }
-
-    def get_recent_sync_stats(self, hours: int = 24) -> dict[str, Any]:
-        """Get sync statistics for the recent period.
-        
-        Args:
-            hours: Number of hours to look back (default 24).
-        
-        Returns:
-            Dict with total, success, failed counts and success rate.
-        """
-        cutoff = int(time.time()) - (hours * 3600)
-        with self.connect() as conn:
-            total = conn.execute(
-                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ?", (cutoff,)
-            ).fetchone()[0]
-            success = conn.execute(
-                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ? AND status = 'ok'", (cutoff,)
-            ).fetchone()[0]
-        
-        failed = total - success
-        success_rate = (success / total * 100) if total > 0 else 100.0
-        
-        return {
-            "hours": hours,
-            "total": total,
-            "success": success,
-            "failed": failed,
-            "success_rate": round(success_rate, 2),
+            "total_sources": total_sources,
+            "active_sources": active_sources,
+            "total_articles": total_articles,
+            "recent_articles": recent_articles,
+            "total_syncs": total_syncs,
+            "successful_syncs": successful_syncs,
+            "success_rate": (successful_syncs / total_syncs * 100) if total_syncs > 0 else 0,
+            "total_received": total_received,
+            "avg_sync_duration": int(avg_duration),
+            "top_sources": [dict(row) for row in top_sources],
+            "recent_syncs": [dict(row) for row in recent_syncs],
         }
 
 
 class SyncService:
-
     def __init__(
         self,
         db: AppDB,
@@ -696,7 +598,6 @@ class SyncService:
             raise FetcherError("公众号不存在")
         if not self._lock.acquire(blocking=False):
             raise FetcherError("已有同步任务正在运行，请稍后再试")
-        logger.info("Starting sync for source %d (%s)", source.id, source.name or source.book_id)
         run_id = self.db.mark_sync_start(source.id)
         try:
             try:
@@ -717,8 +618,6 @@ class SyncService:
             except Exception as exc:
                 result = SyncResult(source.id, 0, 0, 0, "error", str(exc))
             self.db.mark_sync_finish(source, run_id, result)
-            logger.info("Sync completed for source %d: status=%s, received=%d, new=%d", 
-                       source.id, result.status, result.received, result.new_count)
             return result
         finally:
             self._lock.release()
