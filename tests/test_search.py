@@ -1,5 +1,4 @@
 """Tests for full-text search functionality."""
-import pytest
 from pathlib import Path
 from service import AppDB, SyncService, CredentialStore, Scheduler
 from wechat_mp_fetcher import Article, open_db, save_article
@@ -179,6 +178,6 @@ def test_search_route_returns_200(tmp_path: Path):
         status_captured.append(status)
         headers_captured.extend(headers)
     
-    result = app(environ, start_response)
+    result = app(environ, start_response)  # noqa: F841
     
     assert status_captured[0].startswith("200")

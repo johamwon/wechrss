@@ -1,7 +1,6 @@
 """Tests for auto-backfill feature (issue #7)."""
 import json
 import time
-from pathlib import Path
 
 import pytest
 
