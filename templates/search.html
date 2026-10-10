@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}搜索 · WeRSS{% endblock %}
+{% block content %}
+<section class="page-heading">
+  <span class="eyebrow">全文检索</span>
+  <h1>搜索文章</h1>
+  <p>在所有订阅的文章中搜索标题、摘要或内容。</p>
+</section>
+
+<div class="card">
+  <form method="get" action="/search" class="search-form">
+    <div class="search-bar">
+      <input type="search" name="q" value="{{ query }}" placeholder="输入关键词搜索文章..." autofocus>
+      <select name="source">
+        <option value="">所有公众号</option>
+        {% for source in sources %}
+        <option value="{{ source.book_id }}" {% if source_filter == source.book_id %}selected{% endif %}>{{ source.name or source.book_id }}</option>
+        {% endfor %}
+      </select>
+      <button class="button primary" type="submit">搜索</button>
+    </div>
+  </form>
+</div>
+
+{% if query %}
+<section class="search-results">
+  <div class="results-header">
+    <h2>搜索结果</h2>
+    <span class="results-count">找到 {{ article_count }} 篇文章</span>
+  </div>
+
+  {% if articles %}
+  <div class="article-list">
+    {% for article in articles %}
+    <article class="article-card">
+      {% if article.cover_url %}
+      <div class="article-cover">
+        <img src="{{ article.cover_url }}" alt="" loading="lazy">
+      </div>
+      {% endif %}
+      <div class="article-body">
+        <h3 class="article-title">
+          {% if article.url %}
+          <a href="{{ article.url }}" target="_blank" rel="noreferrer">{{ article.title or '无标题' }}</a>
+          {% else %}
+          {{ article.title or '无标题' }}
+          {% endif %}
+        </h3>
+        <p class="article-summary">{{ article.summary or '暂无摘要' }}</p>
+        <div class="article-meta">
+          <span class="article-date">{{ fmt_ts(article.publish_at) if article.publish_at else '未知时间' }}</span>
+          {% if article.author %}
+          <span class="article-author">{{ article.author }}</span>
+          {% endif %}
+          {% if article.read_num %}
+          <span class="article-stats">阅读 {{ article.read_num }}</span>
+          {% endif %}
+          {% if article.like_num %}
+          <span class="article-stats">点赞 {{ article.like_num }}</span>
+          {% endif %}
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p>没有找到匹配的文章</p>
+    <p class="empty-hint">尝试使用不同的关键词或扩大搜索范围</p>
+  </div>
+  {% endif %}
+</section>
+{% else %}
+<section class="search-help">
+  <div class="card">
+    <h2>搜索提示</h2>
+    <ul>
+      <li>输入关键词搜索文章标题、摘要和内容</li>
+      <li>可以选择特定公众号进行筛选</li>
+      <li>搜索结果按发布时间倒序排列</li>
+      <li>最多显示 200 条结果</li>
+    </ul>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

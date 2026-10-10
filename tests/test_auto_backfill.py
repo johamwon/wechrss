@@ -1,12 +1,11 @@
 """Tests for auto-backfill feature (issue #7)."""
 import json
 import time
-from pathlib import Path
 
 import pytest
 
 from service import AppDB, CredentialStore, Scheduler, SyncService, _PartialBackfillError
-from wechat_mp_fetcher import Article, RiskControlError, AuthExpiredError, save_article
+from wechat_mp_fetcher import Article, RiskControlError, save_article
 from weread_auth import WeReadCredentials
 
 

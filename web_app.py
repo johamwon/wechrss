@@ -286,6 +286,28 @@ class WebApp:
                     feed_url=self._base_url(environ) + f"/feeds/{source.id}.xml",
                 )
 
+            if path == "/search" and method == "GET":
+                from urllib.parse import parse_qs
+                params = parse_qs(environ.get("QUERY_STRING", ""))
+                query = params.get("q", [""])[0]
+                book_id = params.get("source", [None])[0]
+                limit = int(params.get("limit", ["50"])[0])
+                
+                articles = []
+                sources_list = self.db.list_sources()
+                if query:
+                    articles = self.db.search_articles(query, book_id=book_id, limit=limit)
+                
+                return self._render(
+                    start_response,
+                    "search.html",
+                    query=query,
+                    source_filter=book_id or "",
+                    articles=articles,
+                    sources=sources_list,
+                    article_count=len(articles),
+                )
+
             m = re.fullmatch(r"/sources/(\d+)/edit", path)
             if m and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
