@@ -21,11 +21,6 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from dotenv import load_dotenv
 
 from service import AppDB, CredentialStore, Scheduler, SyncService
-from logging_config import setup_logging, get_logger
-
-# Initialize logging
-setup_logging()
-logger = get_logger("web")
 from weread_auth import LoginManager, WeReadAuthClient
 from wechat_mp_fetcher import FetcherError
 
@@ -283,12 +278,7 @@ class WebApp:
             if m and method == "GET":
                 source_id = int(m.group(1)); source = self.db.get_source(source_id)
                 if not source:
-        
-            if path == "/statistics" and method == "GET":
-                stats = self.db.get_statistics()
-                return self._render(start_response, "statistics.html", stats=stats)
-
-            return self._render(start_response, "error.html", status="404 Not Found", error="没有找到这个公众号订阅，它可能已经被删除。")
+                    return self._render(start_response, "error.html", status="404 Not Found", error="没有找到这个公众号订阅，它可能已经被删除。")
                 articles = self.db.get_articles(source.book_id, limit=source.rss_limit)
                 return self._render(
                     start_response, "source_detail.html", source=source, articles=articles,
@@ -296,40 +286,9 @@ class WebApp:
                     feed_url=self._base_url(environ) + f"/feeds/{source.id}.xml",
                 )
 
-            if path == "/search" and method == "GET":
-                from urllib.parse import parse_qs
-                params = parse_qs(environ.get("QUERY_STRING", ""))
-                query = params.get("q", [""])[0]
-                book_id = params.get("source", [None])[0]
-                limit = int(params.get("limit", ["50"])[0])
-                
-                articles = []
-                sources_list = self.db.list_sources()
-                if query:
-                    articles = self.db.search_articles(query, book_id=book_id, limit=limit)
-                
-                return self._render(
-                    start_response,
-                    "search.html",
-                    query=query,
-                    source_filter=book_id or "",
-                    articles=articles,
-                    sources=sources_list,
-                    article_count=len(articles),
-                )
-
-            if path == "/sources/batch/delete" and method == "POST":
-                form = self._form(environ); self._require_csrf(form)
-                source_ids = form.getlist("source_ids")
-                if not source_ids:
-                    return self._redirect(start_response, "/?error=" + quote("请选择要删除的公众号"))
-                
-                try:
-                    ids = [int(sid) for sid in source_ids]
-                    deleted = self.db.delete_sources_batch(ids)
-                    return self._redirect(start_response, f"/?message={quote(f'已删除 {deleted} 个公众号')}")
-                except (ValueError, TypeError):
-                    return self._redirect(start_response, "/?error=" + quote("无效的公众号 ID"))
+            if path == "/statistics" and method == "GET":
+                stats = self.db.get_statistics()
+                return self._render(start_response, "statistics.html", stats=stats)
 
             m = re.fullmatch(r"/sources/(\d+)/edit", path)
             if m and method == "POST":
@@ -345,9 +304,7 @@ class WebApp:
             if m and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
                 source_id = int(m.group(1))
-                logger.info("Manual sync triggered for source %d", source_id)
                 result = self.service.sync_source(source_id)
-                logger.info("Sync completed for source %d: status=%s, new=%d", source_id, result.status, result.new_count)
                 if result.status == "ok":
                     msg = f"同步完成：收到 {result.received}，新增 {result.new_count}"
                     return self._redirect(start_response, f"/sources/{source_id}?message={quote(msg)}")
@@ -497,64 +454,10 @@ class WebApp:
 
             if path == "/api/health" and method == "GET":
                 cs = self.credentials.status()
-                
-                # Database integrity check
-                integrity = self.db.check_integrity()
-                
-                # Database statistics
-                db_stats = self.db.get_stats()
-                
-                # Recent sync statistics
-                sync_stats = self.db.get_recent_sync_stats(hours=24)
-                
-                # Disk space check
-                import shutil
-                disk = shutil.disk_usage(self.db.path.parent)
-                disk_free_gb = round(disk.free / (1024**3), 2)
-                disk_total_gb = round(disk.total / (1024**3), 2)
-                disk_usage_percent = round((disk.used / disk.total) * 100, 2)
-                
-                # Overall health status
-                health_ok = (
-                    integrity["ok"] and
-                    cs["configured"] and
-                    disk_free_gb > 0.1  # At least 100MB free
-                )
-                
                 return self._json(start_response, {
-                    "ok": health_ok,
-                    "time": int(time.time()),
-                    "version": APP_VERSION,
-                    
-                    # Scheduler status
-                    "scheduler": self.scheduler.enabled,
-                    
-                    # Credentials status
-                    "credentials": {
-                        "configured": cs["configured"],
-                        "refreshable": cs["refreshable"],
-                        "login_status": self.login_manager.status().get("status", "idle"),
-                    },
-                    
-                    # Database health
-                    "database": {
-                        "integrity_ok": integrity["ok"],
-                        "integrity_errors": integrity["errors"],
-                        "size_bytes": db_stats["db_size_bytes"],
-                        "sources": db_stats["sources"],
-                        "articles": db_stats["articles"],
-                        "sync_runs": db_stats["sync_runs"],
-                    },
-                    
-                    # Sync performance
-                    "sync_24h": sync_stats,
-                    
-                    # Disk space
-                    "disk": {
-                        "free_gb": disk_free_gb,
-                        "total_gb": disk_total_gb,
-                        "usage_percent": disk_usage_percent,
-                    },
+                    "ok": True, "time": int(time.time()), "scheduler": self.scheduler.enabled,
+                    "credentials": cs["configured"], "refreshable": cs["refreshable"],
+                    "login": self.login_manager.status().get("status", "idle"), "version": APP_VERSION,
                 })
 
             if path == "/api/sources" and method == "GET":
@@ -573,7 +476,7 @@ class WebApp:
                 return self._redirect(start_response, target + sep + "error=" + quote(str(exc)))
             return self._render(start_response, "error.html", status="400 Bad Request", error=str(exc))
         except Exception as exc:
-            logger.error("Web request error: %s", exc, exc_info=True)
+            print(f"[web-error] {exc}", file=sys.stderr)
             return self._render(start_response, "error.html", status="500 Internal Server Error", error=str(exc))
 
 
@@ -605,9 +508,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     app, scheduler = build_runtime()
     scheduler.start()
-    logger.info("WeRSS Web starting on http://%s:%s", args.host, args.port)
+    print(f"WeRSS Web: http://{args.host}:{args.port}")
     if not os.getenv("ADMIN_PASSWORD") and args.host not in {"127.0.0.1", "localhost", "::1"}:
-        logger.warning("ADMIN_PASSWORD 未设置；不要把无认证管理端暴露到公网")
+        print("[warning] ADMIN_PASSWORD 未设置；不要把无认证管理端暴露到公网。", file=sys.stderr)
     try:
         with make_server(args.host, args.port, app, server_class=ThreadingWSGIServer, handler_class=QuietHandler) as server:
             server.serve_forever()
