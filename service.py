@@ -450,16 +450,6 @@ class AppDB:
             ).fetchall()
         return [self._row_to_source(r) for r in rows]
 
-
-
-
-class _PartialBackfillError(Exception):
-    """Raised when backfill completes partially before hitting risk control."""
-    def __init__(self, resolved: int, failed: int):
-        self.resolved = resolved
-        self.failed = failed
-        super().__init__(f"Backfill interrupted: {resolved} resolved, {failed} failed")
-
     def search_articles(self, query: str, book_id: str | None = None, limit: int = 50) -> list[Article]:
         """Search articles by title, summary, or content.
         
@@ -504,6 +494,16 @@ class _PartialBackfillError(Exception):
                 ).fetchall()
         
         return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
+
+
+
+
+class _PartialBackfillError(Exception):
+    """Raised when backfill completes partially before hitting risk control."""
+    def __init__(self, resolved: int, failed: int):
+        self.resolved = resolved
+        self.failed = failed
+        super().__init__(f"Backfill interrupted: {resolved} resolved, {failed} failed")
 
 
 class SyncService:
