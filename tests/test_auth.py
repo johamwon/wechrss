@@ -1,4 +1,5 @@
 import time
+from urllib.parse import urlparse
 from weread_auth import (
     LoginManager,
     PollResult,
@@ -32,11 +33,12 @@ class FakeSession:
 
     def get(self, url, **kwargs):
         self.gets.append((url, kwargs))
+        parsed = urlparse(url)
         if url.endswith("/wxticket"):
             return FakeResponse({"signature": "ticket-sign", "timeStamp": 123456})
         if "sdk/qrconnect" in url:
             return FakeResponse({"errcode": 0, "uuid": "uuid-test"})
-        if "long.open.weixin.qq.com" in url:
+        if parsed.hostname == "long.open.weixin.qq.com":
             return FakeResponse(self.poll_payloads.pop(0))
         if url.endswith("/feature"):
             return FakeResponse({"feature": {"guest_token": "guest-x"}, "synckey": 42})
