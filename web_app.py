@@ -358,10 +358,21 @@ class WebApp:
                 return [payload]
 
             if path == "/settings" and method == "GET":
+                import json as _json
+                backfill_last_result_raw = self.scheduler.backfill_last_result
+                backfill_last_result = None
+                if backfill_last_result_raw:
+                    try:
+                        backfill_last_result = _json.loads(backfill_last_result_raw)
+                    except Exception:
+                        pass
                 return self._render(
                     start_response, "settings.html",
                     message=query.get("message", ""), error=query.get("error", ""),
                     login_status=self.login_manager.status(),
+                    backfill_enabled=self.scheduler.backfill_enabled,
+                    backfill_interval=self.scheduler.backfill_interval,
+                    backfill_last_result=backfill_last_result,
                 )
 
             if path == "/settings/login/start" and method == "POST":
@@ -395,6 +406,44 @@ class WebApp:
                 self.scheduler.enabled = form.get("enabled") == "1"
                 self.db.set_setting("scheduler_enabled", "1" if self.scheduler.enabled else "0")
                 return self._redirect(start_response, "/settings?message=" + quote("调度器状态已更新"))
+
+            if path == "/settings/backfill" and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                enabled = form.get("enabled") == "1"
+                interval = int(form.get("interval_minutes") or 60)
+                self.scheduler.set_backfill_enabled(enabled)
+                self.scheduler.set_backfill_interval(interval)
+                if self._accepts_json(environ):
+                    return self._json(start_response, {
+                        "success": True,
+                        "backfill_enabled": self.scheduler.backfill_enabled,
+                        "backfill_interval_minutes": self.scheduler.backfill_interval,
+                    })
+                return self._redirect(start_response, "/settings?message=" + quote("自动补全设置已更新") + "#backfill")
+
+            if path == "/settings/backfill/run" and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                try:
+                    result = self.service.auto_backfill_once()
+                    import json as _json
+                    result["timestamp"] = int(time.time())
+                    self.db.set_setting("backfill_last_result", _json.dumps(result, ensure_ascii=False))
+                    self.db.set_setting("backfill_last_run_at", str(result["timestamp"]))
+                    if result["status"] == "empty":
+                        msg = "暂无缺失原文链接的文章"
+                    elif result["status"] == "ok":
+                        msg = f"补全完成：成功 {result['resolved']}，失败 {result['failed']}"
+                    elif result["status"] == "interrupted":
+                        msg = f"补全中断（风控）：已解决 {result['resolved']}，失败 {result['failed']}"
+                    else:
+                        msg = f"补全失败：{result.get('error', '未知错误')}"
+                    if self._accepts_json(environ):
+                        return self._json(start_response, {"success": True, "result": result, "message": msg})
+                    return self._redirect(start_response, "/settings?message=" + quote(msg) + "#backfill")
+                except Exception as exc:
+                    if self._accepts_json(environ):
+                        return self._json(start_response, {"success": False, "error": str(exc)}, status="400 Bad Request")
+                    return self._redirect(start_response, "/settings?error=" + quote(str(exc)) + "#backfill")
 
             if path == "/api/login/status" and method == "GET":
                 return self._json(start_response, self.login_manager.status())
