@@ -462,75 +462,45 @@ class _PartialBackfillError(Exception):
 
 
 
-    def get_statistics(self) -> dict:
-        """Get comprehensive statistics for the dashboard.
+    def get_webhook_url(self) -> str:
+        """Get the configured webhook URL."""
+        return self.get_setting("webhook_url", "")
+    
+    def set_webhook_url(self, url: str) -> None:
+        """Set the webhook URL."""
+        self.set_setting("webhook_url", url.strip())
+    
+    def send_webhook_notification(self, event: str, data: dict) -> bool:
+        """Send a webhook notification.
+        
+        Args:
+            event: Event type (e.g., "new_articles", "sync_complete")
+            data: Event data to send
         
         Returns:
-            Dictionary with various statistics
+            True if notification was sent successfully
         """
-        with self.connect() as conn:
-            # Total sources
-            total_sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-            active_sources = conn.execute("SELECT COUNT(*) FROM sources WHERE enabled=1").fetchone()[0]
-            
-            # Total articles
-            total_articles = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-            
-            # Articles in last 7 days
-            seven_days_ago = int(time.time()) - 7 * 24 * 3600
-            recent_articles = conn.execute(
-                "SELECT COUNT(*) FROM articles WHERE publish_at > ?", (seven_days_ago,)
-            ).fetchone()[0]
-            
-            # Sync runs statistics
-            total_syncs = conn.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
-            successful_syncs = conn.execute(
-                "SELECT COUNT(*) FROM sync_runs WHERE status='success'"
-            ).fetchone()[0]
-            
-            # Total articles received
-            total_received = conn.execute(
-                "SELECT COALESCE(SUM(received), 0) FROM sync_runs"
-            ).fetchone()[0]
-            
-            # Average sync duration
-            avg_duration = conn.execute(
-                """SELECT AVG(finished_at - started_at) FROM sync_runs 
-                   WHERE status='success' AND finished_at > 0"""
-            ).fetchone()[0] or 0
-            
-            # Top sources by article count
-            top_sources = conn.execute(
-                """SELECT s.name, s.book_id, COUNT(a.review_id) as article_count
-                   FROM sources s
-                   LEFT JOIN articles a ON s.book_id = a.book_id
-                   GROUP BY s.id
-                   ORDER BY article_count DESC
-                   LIMIT 5"""
-            ).fetchall()
-            
-            # Recent sync activity (last 10)
-            recent_syncs = conn.execute(
-                """SELECT s.name, sr.status, sr.received, sr.new_count, sr.started_at
-                   FROM sync_runs sr
-                   JOIN sources s ON sr.source_id = s.id
-                   ORDER BY sr.started_at DESC
-                   LIMIT 10"""
-            ).fetchall()
+        webhook_url = self.get_webhook_url()
+        if not webhook_url:
+            return False
         
-        return {
-            "total_sources": total_sources,
-            "active_sources": active_sources,
-            "total_articles": total_articles,
-            "recent_articles": recent_articles,
-            "total_syncs": total_syncs,
-            "successful_syncs": successful_syncs,
-            "success_rate": (successful_syncs / total_syncs * 100) if total_syncs > 0 else 0,
-            "total_received": total_received,
-            "avg_sync_duration": int(avg_duration),
-            "top_sources": [dict(row) for row in top_sources],
-            "recent_syncs": [dict(row) for row in recent_syncs],
+        payload = {
+            "event": event,
+            "timestamp": int(time.time()),
+            "data": data
         }
+        
+        try:
+            req = urllib.request.Request(
+                webhook_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                return response.status == 200
+        except Exception:
+            return False
 
 
 class SyncService:
