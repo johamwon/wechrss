@@ -91,57 +91,22 @@
       </div>
     </section>
 
-    <section class="card settings-section" id="backfill">
-      <div class="card-header"><div><h2>自动补全</h2><p>自动为缺失原文链接的文章补全 URL，与自动同步相互独立</p></div><span class="badge {{ 'ok' if backfill_enabled else 'paused' }}">{{ '已开启' if backfill_enabled else '已关闭' }}</span></div>
+    <section class="card settings-section" id="opml">
+      <div class="card-header"><div><h2>OPML 管理</h2><p>导出订阅列表用于备份，或从其他 RSS 工具导入</p></div></div>
       <div class="setting-row">
-        <div><strong>自动补全开关</strong><p>开启后，调度器会按设定的间隔自动为缺失原文链接的文章补全 URL。每轮随机选 1 个公众号，最多补 5 篇。</p></div>
-        <form method="post" action="/settings/backfill"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{{ '0' if backfill_enabled else '1' }}"><button class="button {{ 'danger' if backfill_enabled else 'primary' }}" type="submit">{{ '关闭自动补全' if backfill_enabled else '开启自动补全' }}</button></form>
+        <div><strong>导出订阅</strong><p>将所有公众号订阅导出为 OPML 2.0 格式文件，可在其他 RSS 阅读器中导入。</p></div>
+        <a class="button primary" href="/settings/opml/export" download>导出 OPML</a>
       </div>
       <div class="setting-row">
-        <div><strong>补全间隔</strong><p>两次自动补全之间的最小间隔（60 ~ 10080 分钟）。超出范围会自动收敛到边界值。</p></div>
-        <form method="post" action="/settings/backfill" class="inline-fields">
+        <div><strong>导入订阅</strong><p>上传 OPML 文件，批量添加公众号订阅。已存在的公众号会自动跳过。</p></div>
+        <form method="post" action="/settings/opml/import" enctype="multipart/form-data" class="inline-fields">
           <input type="hidden" name="csrf" value="{{ csrf }}">
-          <input type="hidden" name="enabled" value="{{ '1' if backfill_enabled else '0' }}">
-          <div class="field-group"><label for="backfill-interval">间隔（分钟）</label><input id="backfill-interval" name="interval_minutes" type="number" min="60" max="10080" value="{{ backfill_interval }}" required></div>
-          <button class="button" type="submit">保存间隔</button>
+          <div class="field-group">
+            <label for="opml-file">选择 OPML 文件</label>
+            <input id="opml-file" name="opml_file" type="file" accept=".opml,.xml" required>
+          </div>
+          <button class="button" type="submit">导入</button>
         </form>
-      </div>
-      <div class="setting-row">
-        <div><strong>立即执行一次</strong><p>不等待间隔，马上触发一轮补全。</p></div>
-        <form method="post" action="/settings/backfill/run"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button primary" type="submit">立即补全一次</button></form>
-      </div>
-      {% if backfill_last_result %}
-      <div class="setting-row">
-        <div><strong>最近一次结果</strong>
-          <p>
-            {% if backfill_last_result.status == 'ok' %}
-              补全成功：成功 {{ backfill_last_result.resolved }} 篇，失败 {{ backfill_last_result.failed }} 篇
-            {% elif backfill_last_result.status == 'empty' %}
-              暂无缺失原文链接的文章
-            {% elif backfill_last_result.status == 'interrupted' %}
-              补全中断（风控触发）：已解决 {{ backfill_last_result.resolved }} 篇，失败 {{ backfill_last_result.failed }} 篇
-            {% elif backfill_last_result.status == 'error' %}
-              补全失败：{{ backfill_last_result.error or '未知错误' }}
-            {% else %}
-              状态：{{ backfill_last_result.status }}
-            {% endif %}
-            {% if backfill_last_result.timestamp %}
-              <br><small>{{ fmt_ts(backfill_last_result.timestamp) }}</small>
-            {% endif %}
-          </p>
-        </div>
-      </div>
-      {% endif %}
-    </section>
-
-    <section class="card settings-section" id="appearance">
-      <div class="card-header"><div><h2>外观</h2><p>选择适合你的显示模式</p></div></div>
-      <div class="setting-row">
-        <div><strong>深色模式</strong><p>自动跟随系统设置，或手动切换。偏好会保存在本地。</p></div>
-        <button class="button" type="button" data-theme-toggle aria-label="切换到深色模式">
-          <span data-theme-icon>🌙</span>
-          <span>切换主题</span>
-        </button>
       </div>
     </section>
 

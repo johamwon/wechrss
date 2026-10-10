@@ -411,43 +411,48 @@ class WebApp:
                 self.db.set_setting("scheduler_enabled", "1" if self.scheduler.enabled else "0")
                 return self._redirect(start_response, "/settings?message=" + quote("调度器状态已更新"))
 
-            if path == "/settings/backfill" and method == "POST":
-                form = self._form(environ); self._require_csrf(form)
-                enabled = form.get("enabled") == "1"
-                interval = int(form.get("interval_minutes") or 60)
-                self.scheduler.set_backfill_enabled(enabled)
-                self.scheduler.set_backfill_interval(interval)
-                if self._accepts_json(environ):
-                    return self._json(start_response, {
-                        "success": True,
-                        "backfill_enabled": self.scheduler.backfill_enabled,
-                        "backfill_interval_minutes": self.scheduler.backfill_interval,
-                    })
-                return self._redirect(start_response, "/settings?message=" + quote("自动补全设置已更新") + "#backfill")
 
-            if path == "/settings/backfill/run" and method == "POST":
+            if path == "/settings/opml/export" and method == "GET":
+                opml_content = self.service.export_opml(self._base_url(environ))
+                body = opml_content.encode("utf-8")
+                start_response("200 OK", [
+                    ("Content-Type", "application/xml; charset=utf-8"),
+                    ("Content-Disposition", 'attachment; filename="wechrss-subscriptions.opml"'),
+                    ("Content-Length", str(len(body))),
+                ])
+                return [body]
+
+            if path == "/settings/opml/import" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
-                try:
-                    result = self.service.auto_backfill_once()
-                    import json as _json
-                    result["timestamp"] = int(time.time())
-                    self.db.set_setting("backfill_last_result", _json.dumps(result, ensure_ascii=False))
-                    self.db.set_setting("backfill_last_run_at", str(result["timestamp"]))
-                    if result["status"] == "empty":
-                        msg = "暂无缺失原文链接的文章"
-                    elif result["status"] == "ok":
-                        msg = f"补全完成：成功 {result['resolved']}，失败 {result['failed']}"
-                    elif result["status"] == "interrupted":
-                        msg = f"补全中断（风控）：已解决 {result['resolved']}，失败 {result['failed']}"
+                
+                # Handle file upload
+                content_type = environ.get("CONTENT_TYPE", "")
+                if "multipart/form-data" in content_type:
+                    # Parse multipart form data to get file content
+                    import cgi
+                    fs = cgi.FieldStorage(
+                        fp=environ["wsgi.input"],
+                        environ=environ,
+                        keep_blank_values=True
+                    )
+                    file_item = fs.get("opml_file")
+                    if file_item and file_item.file:
+                        opml_content = file_item.file.read().decode("utf-8")
                     else:
-                        msg = f"补全失败：{result.get('error', '未知错误')}"
-                    if self._accepts_json(environ):
-                        return self._json(start_response, {"success": True, "result": result, "message": msg})
-                    return self._redirect(start_response, "/settings?message=" + quote(msg) + "#backfill")
+                        return self._redirect(start_response, "/settings?error=" + quote("未选择 OPML 文件") + "#opml")
+                else:
+                    # Fallback to form field
+                    opml_content = form.get("opml_content", "")
+                
+                if not opml_content.strip():
+                    return self._redirect(start_response, "/settings?error=" + quote("OPML 内容为空") + "#opml")
+                
+                try:
+                    result = self.service.import_opml(opml_content)
+                    msg = f"导入完成：新增 {result['imported']}，跳过 {result['skipped']}，失败 {result['failed']}"
+                    return self._redirect(start_response, "/settings?message=" + quote(msg) + "#opml")
                 except Exception as exc:
-                    if self._accepts_json(environ):
-                        return self._json(start_response, {"success": False, "error": str(exc)}, status="400 Bad Request")
-                    return self._redirect(start_response, "/settings?error=" + quote(str(exc)) + "#backfill")
+                    return self._redirect(start_response, "/settings?error=" + quote(str(exc)) + "#opml")
 
             if path == "/api/login/status" and method == "GET":
                 return self._json(start_response, self.login_manager.status())
