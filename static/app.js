@@ -226,4 +226,27 @@
 
     pollLogin();
   }
+
+  // Batch operations - select all
+  const selectAll = document.getElementById("select-all");
+  if (selectAll) {
+    const checkboxes = document.querySelectorAll('input[name="source_ids"]');
+    
+    selectAll.addEventListener("change", () => {
+      checkboxes.forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+    });
+    
+    // Update select-all state when individual checkboxes change
+    checkboxes.forEach(cb => {
+      cb.addEventListener("change", () => {
+        const allChecked = Array.from(checkboxes).every(c => c.checked);
+        const someChecked = Array.from(checkboxes).some(c => c.checked);
+        selectAll.checked = allChecked;
+        selectAll.indeterminate = someChecked && !allChecked;
+      });
+    });
+  }
+
 })();

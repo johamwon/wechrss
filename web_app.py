@@ -313,6 +313,19 @@ class WebApp:
                     article_count=len(articles),
                 )
 
+            if path == "/sources/batch/delete" and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                source_ids = form.getlist("source_ids")
+                if not source_ids:
+                    return self._redirect(start_response, "/?error=" + quote("请选择要删除的公众号"))
+                
+                try:
+                    ids = [int(sid) for sid in source_ids]
+                    deleted = self.db.delete_sources_batch(ids)
+                    return self._redirect(start_response, f"/?message={quote(f'已删除 {deleted} 个公众号')}")
+                except (ValueError, TypeError):
+                    return self._redirect(start_response, "/?error=" + quote("无效的公众号 ID"))
+
             m = re.fullmatch(r"/sources/(\d+)/edit", path)
             if m and method == "POST":
                 form = self._form(environ); self._require_csrf(form)

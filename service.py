@@ -375,6 +375,31 @@ class AppDB:
                 conn.execute("DELETE FROM articles WHERE book_id=?", (source.book_id,))
             conn.commit()
 
+
+    def delete_sources_batch(self, source_ids: list[int]) -> int:
+        """Delete multiple sources at once.
+        
+        Args:
+            source_ids: List of source IDs to delete
+        
+        Returns:
+            Number of sources deleted
+        """
+        if not source_ids:
+            return 0
+        
+        deleted = 0
+        with self.connect() as conn:
+            for source_id in source_ids:
+                # Check if source exists
+                row = conn.execute("SELECT id FROM sources WHERE id=?", (source_id,)).fetchone()
+                if row:
+                    conn.execute("DELETE FROM sources WHERE id=?", (source_id,))
+                    deleted += 1
+            conn.commit()
+        return deleted
+
+
     def due_sources(self, now: int | None = None) -> list[Source]:
         now = int(now or time.time())
         with self.connect() as conn:
