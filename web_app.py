@@ -245,7 +245,7 @@ class WebApp:
         method = environ.get("REQUEST_METHOD", "GET").upper()
         query = self._query(environ)
         try:
-            if path in {"/static/app.css", "/static/app.js", "/static/favicon.svg"} and method == "GET":
+            if path in {"/static/app.css", "/static/app.js", "/static/favicon.svg", "/static/qrcode.png"} and method == "GET":
                 asset = BASE_DIR / "static" / path.rsplit("/", 1)[-1]
                 data = asset.read_bytes()
                 content_type = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
