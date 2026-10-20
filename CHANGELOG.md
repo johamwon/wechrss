@@ -7,7 +7,8 @@
 ### 新增
 
 - README 与 Web 界面页脚新增作者微信二维码，读者可扫码联系；
-- Docker 镜像支持通过 `PORT` 环境变量自定义监听端口（默认仍为 `8080`），便于部署到要求固定端口的平台（如 ModelScope 创空间）。
+- Docker 镜像支持通过 `PORT` 环境变量自定义监听端口（默认仍为 `8080`），便于部署到要求固定端口的平台（如 ModelScope 创空间）；
+- 支持通过 `ALLOWED_FRAME_ANCESTORS` 环境变量放行指定源的 iframe 嵌入（默认禁止），修复部署到 ModelScope 创空间时页面被浏览器以 `X-Frame-Options`/`frame-ancestors` 拒绝渲染的问题。
 
 ## [4.1.0] - 2026-08-23
 

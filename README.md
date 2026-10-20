@@ -162,6 +162,7 @@ ADMIN_PASSWORD=换成足够强的密码
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
 | `ADMIN_PASSWORD` | 空 | Web Basic Auth 密码；远程访问时必须设置 |
+| `ALLOWED_FRAME_ANCESTORS` | 空 | 允许以 iframe 嵌入本站的源（空格分隔）；留空禁止嵌入。部署到 ModelScope 创空间等平台时设为平台域名 |
 | `BIND_ADDRESS` | `127.0.0.1` | Compose 暴露地址 |
 | `PORT` | `8080` | 服务端口 |
 | `WEREAD_MIN_INTERVAL` | `2` | 微信读书请求最小间隔（秒） |

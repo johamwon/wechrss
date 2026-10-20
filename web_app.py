@@ -30,6 +30,9 @@ load_dotenv(BASE_DIR / ".env")
 DATA_DIR = Path(os.getenv("WECHAT_MP_DATA", str(BASE_DIR / "data"))).resolve()
 DB_PATH = Path(os.getenv("WECHAT_MP_DB", str(DATA_DIR / "wechat_mp.db"))).resolve()
 CREDENTIALS_PATH = Path(os.getenv("WECHAT_MP_CREDENTIALS", str(DATA_DIR / "credentials.json"))).resolve()
+# 允许以 iframe 嵌入本站的源（空格分隔）；留空则禁止嵌入（X-Frame-Options: DENY + frame-ancestors 'none'）。
+# 部署到 ModelScope 创空间等 iframe 平台时设置为对应域名，如 https://www.modelscope.cn
+ALLOWED_FRAME_ANCESTORS = os.getenv("ALLOWED_FRAME_ANCESTORS", "").strip()
 APP_VERSION = (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
 
 logger = logging.getLogger("wechrss.web")
@@ -223,13 +226,16 @@ class WebApp:
 
         def secure_start_response(status, headers, exc_info=None):
             names = {name.lower() for name, _ in headers}
+            frame_ancestors = ALLOWED_FRAME_ANCESTORS or "'none'"
             common = [
                 ("X-Content-Type-Options", "nosniff"),
-                ("X-Frame-Options", "DENY"),
                 ("Referrer-Policy", "same-origin"),
                 ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
-                ("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"),
+                ("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors %s; base-uri 'self'; form-action 'self'" % frame_ancestors),
             ]
+            if not ALLOWED_FRAME_ANCESTORS:
+                # 未显式放行时保留 X-Frame-Options 兜底（旧浏览器不支持 frame-ancestors）
+                common.append(("X-Frame-Options", "DENY"))
             headers = list(headers) + [(name, value) for name, value in common if name.lower() not in names]
             if exc_info is None:
                 return original_start_response(status, headers)
