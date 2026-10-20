@@ -27,6 +27,8 @@
 
 <p align="center"><img src="./static/qrcode.png" width="200" height="200" alt="作者微信二维码 · 扫码联系"></p>
 
+> 💡 不想本地部署？可在 [ModelScope 创空间](https://www.modelscope.cn/studios/johamwon/wechrss) 在线体验。演示实例为共享环境，数据不定期清理，请勿存放重要订阅。
+
 ![WechRss 订阅管理界面](./docs/assets/dashboard.png)
 
 WechRss 是一个简洁的微信公众号 RSS 助手。粘贴任意一篇公众号文章链接，它会识别公众号、定时同步文章元数据，并为每个公众号生成独立 Feed。数据和凭证保存在本地，支持一键启动和完全自托管。
