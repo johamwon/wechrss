@@ -244,3 +244,92 @@ def test_review_single_resolves_doc_url():
     assert url.endswith("/review/single")
     assert params["reviewId"] == "r-url-1"
     assert params["synckey"] == 0
+
+
+def _db(tmp_path):
+    from wechat_mp_fetcher import open_db
+    return open_db(tmp_path / "t.sqlite")
+
+
+def _url(conn, review_id):
+    from wechat_mp_fetcher import load_articles
+    row = [a for a in load_articles(conn, "MP_WXS_1") if a.review_id == review_id]
+    return row[0].url if row else None
+
+
+def test_save_article_keeps_backfilled_url_when_upstream_url_is_empty(tmp_path):
+    from wechat_mp_fetcher import Article, save_article
+    conn = _db(tmp_path)
+    save_article(conn, Article("r1", "MP_WXS_1", "文章", url="", publish_at=1700000000))
+    conn.commit()
+    conn.execute("UPDATE articles SET url=? WHERE review_id=?",
+                 ("https://mp.weixin.qq.com/s/REAL-TOKEN", "r1"))
+    conn.commit()
+    # 再次同步，上游仍未返回 doc_url
+    save_article(conn, Article("r1", "MP_WXS_1", "文章", url="", publish_at=1700000000))
+    conn.commit()
+    assert _url(conn, "r1") == "https://mp.weixin.qq.com/s/REAL-TOKEN"
+
+
+def test_save_article_prefers_upstream_url_when_it_is_not_synthesized(tmp_path):
+    from wechat_mp_fetcher import Article, save_article
+    conn = _db(tmp_path)
+    save_article(conn, Article("r1", "MP_WXS_1", "文章", url="https://mp.weixin.qq.com/s/OLD", publish_at=1))
+    conn.commit()
+    # 上游给出真实新链接（非占位猜测），应正常更新
+    save_article(conn, Article("r1", "MP_WXS_1", "文章", url="https://mp.weixin.qq.com/s/NEW",
+                               original_id="orig-1", publish_at=1))
+    conn.commit()
+    assert _url(conn, "r1") == "https://mp.weixin.qq.com/s/NEW"
+
+
+def test_save_article_does_not_let_synthesized_url_overwrite_existing_url(tmp_path):
+    from wechat_mp_fetcher import Article, save_article
+    conn = _db(tmp_path)
+    save_article(conn, Article("r3", "MP_WXS_1", "文章", url="https://mp.weixin.qq.com/s/REAL-TOKEN",
+                               original_id="orig-1", publish_at=1))
+    conn.commit()
+    # 上游只返回裸 originalId，拼出占位地址，不应覆盖已有真实链接
+    save_article(conn, Article("r3", "MP_WXS_1", "文章", url="https://mp.weixin.qq.com/s/orig-1",
+                               original_id="orig-1", publish_at=1))
+    conn.commit()
+    assert _url(conn, "r3") == "https://mp.weixin.qq.com/s/REAL-TOKEN"
+
+
+def test_save_article_writes_synthesized_url_when_article_has_no_url_yet(tmp_path):
+    from wechat_mp_fetcher import Article, save_article
+    conn = _db(tmp_path)
+    # 首次入库且本地无 url 时，占位地址仍应写入（保守合并只在已有 url 时拦截）
+    save_article(conn, Article("r4", "MP_WXS_1", "文章", url="https://mp.weixin.qq.com/s/orig-9",
+                               original_id="orig-9", publish_at=1))
+    conn.commit()
+    assert _url(conn, "r4") == "https://mp.weixin.qq.com/s/orig-9"
+
+
+def test_save_article_keeps_original_id_when_upstream_value_is_empty(tmp_path):
+    from wechat_mp_fetcher import Article, load_articles, save_article
+    conn = _db(tmp_path)
+    save_article(conn, Article("r5", "MP_WXS_1", "文章", url="https://mp.weixin.qq.com/s/x",
+                               original_id="orig-5", publish_at=1))
+    conn.commit()
+    save_article(conn, Article("r5", "MP_WXS_1", "文章", url="https://mp.weixin.qq.com/s/x",
+                               original_id="", publish_at=1))
+    conn.commit()
+    row = [a for a in load_articles(conn, "MP_WXS_1") if a.review_id == "r5"][0]
+    assert row.original_id == "orig-5"
+
+
+def test_synthesized_url_helpers():
+    from wechat_mp_fetcher import is_synthesized_article_url, synthesized_article_url
+    # 裸 token 拼出占位地址
+    assert synthesized_article_url("orig-1") == "https://mp.weixin.qq.com/s/orig-1"
+    assert is_synthesized_article_url("https://mp.weixin.qq.com/s/orig-1", "orig-1") is True
+    # 可信来源形态不被判为占位
+    assert synthesized_article_url("https://mp.weixin.qq.com/s/abc") == ""
+    assert synthesized_article_url("/s/abc") == ""
+    assert synthesized_article_url("__biz=Mz&mid=1") == ""
+    assert synthesized_article_url("?__biz=Mz") == ""
+    assert synthesized_article_url("") == ""
+    # 真实链接恰好不等于占位地址时，不算占位
+    assert is_synthesized_article_url("https://mp.weixin.qq.com/s/REAL", "orig-1") is False
+    assert is_synthesized_article_url("", "orig-1") is False

@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install --with-deps chromium
 COPY . .
 RUN mkdir -p /app/data
-EXPOSE 8080
+EXPOSE 8080 7860
 HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
     CMD ["python", "scripts/healthcheck.py"]
-CMD ["python", "web_app.py", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["sh", "-c", "python web_app.py --host 0.0.0.0 --port ${PORT:-8080}"]

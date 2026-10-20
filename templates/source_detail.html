@@ -38,7 +38,7 @@
 <section class="card">
   <div class="card-header article-header">
     <div><h2>文章</h2><p>最近收录的 {{ articles|length }} 篇内容</p></div>
-    <form method="post" action="/sources/{{ source.id }}/resolve-urls" data-loading-form data-loading-label="补全中…">
+    <form data-resolve-url="batch" method="post" action="/sources/{{ source.id }}/resolve-urls" data-loading-form data-loading-label="补全中…">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="button small" type="submit">补全缺失原文链接（最多 5 篇）</button>
     </form>
@@ -58,7 +58,7 @@
           <button class="text-button" type="button" data-copy="{{ a.url }}">复制链接</button>
           <code class="article-url">{{ a.url }}</code>
           {% else %}
-          <form method="post" action="/articles/{{ a.review_id }}/resolve-url" data-loading-form data-loading-label="补全中…"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-button" type="submit">补全原文链接</button></form>
+          <form data-resolve-url="single" method="post" action="/articles/{{ a.review_id }}/resolve-url" data-loading-form data-loading-label="补全中…"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-button" type="submit">补全原文链接</button></form>
           {% endif %}
         </div>
       </div>
@@ -95,6 +95,22 @@
         <button class="button danger" type="submit">删除订阅</button>
       </form>
     </div>
+  </div>
+</details>
+
+<details class="card settings-card">
+  <summary><span><strong>过滤规则</strong><small>按标题关键词过滤文章</small></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7 5 5 5-5"/></svg></summary>
+  <div class="settings-content">
+    <form method="post" action="/sources/{{ source.id }}/filters">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="field-group">
+        <label for="filter-patterns">过滤规则（每行一条）</label>
+        <textarea id="filter-patterns" name="filter_patterns" rows="6" placeholder="+ 包含关键词（必须匹配才收录）&#10;- 排除关键词（匹配则跳过）&#10;&#10;示例：&#10;+ AI&#10;+ 大模型&#10;- 广告&#10;- 推广">{% for rule in filter_rules %}{{ '+' if rule.type == 'include' else '-' }} {{ rule.pattern }}
+{% endfor %}</textarea>
+        <p class="field-help">以 <code>+</code> 开头表示仅收录匹配的文章，以 <code>-</code> 开头表示排除匹配的文章。留空表示不过滤。</p>
+      </div>
+      <button class="button" type="submit">保存过滤规则</button>
+    </form>
   </div>
 </details>
 

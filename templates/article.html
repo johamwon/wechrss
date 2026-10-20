@@ -12,7 +12,7 @@
       <a class="button primary" href="{{ article.url }}" target="_blank" rel="noreferrer">打开微信原文 <span aria-hidden="true">↗</span></a>
       <button class="button" type="button" data-copy="{{ article.url }}"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="1.5"/><path d="M4 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V4"/></svg>复制链接</button>
       {% else %}
-      <form method="post" action="/articles/{{ article.review_id }}/resolve-url" data-loading-form data-loading-label="补全中…"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button" type="submit">补全原文链接</button></form>
+      <form data-resolve-url="single" method="post" action="/articles/{{ article.review_id }}/resolve-url" data-loading-form data-loading-label="补全中…"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button" type="submit">补全原文链接</button></form>
       {% endif %}
     </div>
   </header>

@@ -27,13 +27,23 @@ def test_health_and_dashboard(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(web_app, "DATA_DIR", tmp_path)
     db = AppDB(tmp_path / "db.sqlite")
     creds = CredentialStore(tmp_path / "credentials.json")
+    # Configure credentials so health check returns ok=true
+    from weread_auth import WeReadCredentials
+    creds.save_record(WeReadCredentials(
+        vid="123", accessToken="token", refreshToken="refresh", deviceId="dev"
+    ))
     service = SyncService(db, creds)
     scheduler = Scheduler(db, service)
     app = web_app.WebApp(db, creds, service, scheduler)
     meta, data = call_wsgi(app, "/api/health")
     assert meta["status"].startswith("200")
     assert b'"ok": true' in data
-    assert b'"version": "4.2.0"' in data
+    assert f'"version": "{web_app.APP_VERSION}"'.encode("utf-8") in data
+    # Check new health check fields
+    assert b'"database"' in data
+    assert b'"integrity_ok": true' in data
+    assert b'"sync_24h"' in data
+    assert b'"disk"' in data
     assert meta["headers"]["X-Frame-Options"] == "DENY"
     meta, data = call_wsgi(app, "/")
     assert meta["status"].startswith("200")
@@ -168,3 +178,89 @@ def test_article_resolve_url_post_route(tmp_path: Path, monkeypatch):
     assert meta["status"].startswith("303")
     assert meta["headers"]["Location"].startswith("/articles/r-missing?message=")
     assert db.article_by_review("r-missing").url == expected
+
+
+def test_article_resolve_url_post_json(tmp_path: Path, monkeypatch):
+    from urllib.parse import urlencode
+    import json
+    from wechat_mp_fetcher import Article, save_article
+
+    db = AppDB(tmp_path / "db.sqlite")
+    source = db.add_source(source_value="MP_WXS_655", name="补全链接JSON", fetch_content=False)
+    with db.connect() as conn:
+        save_article(conn, Article("r-json", source.book_id, "JSON测试文章", publish_at=1700000000))
+        conn.commit()
+
+    creds = CredentialStore(tmp_path / "credentials.json")
+    service = SyncService(db, creds)
+    scheduler = Scheduler(db, service)
+    app = web_app.WebApp(db, creds, service, scheduler)
+
+    expected = "https://mp.weixin.qq.com/s/json-token"
+
+    def fake_resolve(review_id: str) -> str:
+        assert review_id == "r-json"
+        db.set_article_url(review_id, expected)
+        return expected
+
+    monkeypatch.setattr(service, "resolve_article_url", fake_resolve)
+    body = urlencode({"csrf": app.csrf_token}).encode("utf-8")
+    meta, data = call_wsgi(
+        app, "/articles/r-json/resolve-url", method="POST", body=body,
+        environ_overrides={"HTTP_ACCEPT": "application/json"},
+    )
+    assert meta["status"].startswith("200")
+    assert meta["headers"]["Content-Type"].startswith("application/json")
+    payload = json.loads(data.decode("utf-8"))
+    assert payload["success"] is True
+    assert payload["url"] == expected
+    assert payload["review_id"] == "r-json"
+    assert db.article_by_review("r-json").url == expected
+
+
+def test_source_resolve_urls_post_json(tmp_path: Path, monkeypatch):
+    from urllib.parse import urlencode
+    import json
+    from wechat_mp_fetcher import Article, save_article
+
+    db = AppDB(tmp_path / "db.sqlite")
+    source = db.add_source(source_value="MP_WXS_656", name="批量补全", fetch_content=False)
+    with db.connect() as conn:
+        save_article(conn, Article("r-batch-1", source.book_id, "文章1", publish_at=1700000000))
+        save_article(conn, Article("r-batch-2", source.book_id, "文章2", publish_at=1700000001))
+        conn.commit()
+
+    creds = CredentialStore(tmp_path / "credentials.json")
+    service = SyncService(db, creds)
+    scheduler = Scheduler(db, service)
+    app = web_app.WebApp(db, creds, service, scheduler)
+
+    def fake_backfill(source_id: int, limit: int = 5) -> tuple[int, int]:
+        assert source_id == source.id
+        return 2, 0
+
+    monkeypatch.setattr(service, "backfill_source_urls", fake_backfill)
+    body = urlencode({"csrf": app.csrf_token}).encode("utf-8")
+    meta, data = call_wsgi(
+        app, f"/sources/{source.id}/resolve-urls", method="POST", body=body,
+        environ_overrides={"HTTP_ACCEPT": "application/json"},
+    )
+    assert meta["status"].startswith("200")
+    assert meta["headers"]["Content-Type"].startswith("application/json")
+    payload = json.loads(data.decode("utf-8"))
+    assert payload["success"] is True
+    assert payload["resolved"] == 2
+    assert payload["failed"] == 0
+
+
+def test_dotenv_is_loaded_on_import(tmp_path: Path, monkeypatch):
+    import os
+    # Explicitly opt into this fixture's fake .env, never the project's real one.
+    monkeypatch.delenv("PYTHON_DOTENV_DISABLED", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("WERSS_TEST_DOTENV_VAR=loaded_from_dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("WERSS_TEST_DOTENV_VAR", raising=False)
+    from dotenv import load_dotenv
+    load_dotenv(env_file)
+    assert os.getenv("WERSS_TEST_DOTENV_VAR") == "loaded_from_dotenv"

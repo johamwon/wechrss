@@ -1,6 +1,42 @@
 (() => {
   "use strict";
 
+  // Theme switching
+  const themeToggle = document.querySelector("[data-theme-toggle]");
+  const savedTheme = localStorage.getItem("theme");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const initialTheme = savedTheme || (prefersDark ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", initialTheme);
+  updateThemeToggleUI(initialTheme);
+
+  if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+      const current = document.documentElement.getAttribute("data-theme") || "light";
+      const next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("theme", next);
+      updateThemeToggleUI(next);
+    });
+
+  }
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+    if (!localStorage.getItem("theme")) {
+      const systemTheme = e.matches ? "dark" : "light";
+      document.documentElement.setAttribute("data-theme", systemTheme);
+      updateThemeToggleUI(systemTheme);
+    }
+  });
+
+  function updateThemeToggleUI(theme) {
+    const toggle = document.querySelector("[data-theme-toggle]");
+    if (!toggle) return;
+    const icon = toggle.querySelector("[data-theme-icon]");
+    if (icon) {
+      icon.textContent = theme === "dark" ? "☀️" : "🌙";
+    }
+    toggle.setAttribute("aria-label", theme === "dark" ? "切换到浅色模式" : "切换到深色模式");
+  }
+
   const toast = document.querySelector(".toast");
   let toastTimer;
 
@@ -53,7 +89,7 @@
 
   document.querySelectorAll("form[data-loading-form]").forEach((form) => {
     form.addEventListener("submit", (event) => {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || form.hasAttribute("data-resolve-url")) return;
       const button = form.querySelector('button[type="submit"], button:not([type])');
       if (!button) return;
       button.disabled = true;
@@ -150,6 +186,51 @@
     setTimeout(pollSync, 1000);
   }
 
+  document.querySelectorAll("form[data-resolve-url]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = form.querySelector('button[type="submit"], button:not([type])');
+      const originalLabel = button ? button.textContent.trim() : "";
+      if (button) {
+        button.disabled = true;
+        button.dataset.busy = "1";
+        button.textContent = form.dataset.loadingLabel || "补全中…";
+      }
+      try {
+        const csrf = form.querySelector('input[name="csrf"]')?.value || "";
+        const response = await fetch(form.action, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams(new FormData(form)),
+        });
+        if (!response.ok) throw new Error("request failed");
+        const data = await response.json();
+        if (!data.success) throw new Error(data.message || "补全失败");
+        showToast("原文链接已补全");
+        if (form.dataset.resolveUrl === "single" && data.url) {
+          const actions = form.closest(".reader-actions");
+          if (actions) {
+            actions.innerHTML =
+              '<a class="button primary" href="' + data.url + '" target="_blank" rel="noreferrer">打开微信原文 <span aria-hidden="true">↗</span></a>' +
+              '<button class="button" type="button" data-copy="' + data.url + '"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="1.5"/><path d="M4 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V4"/></svg>复制链接</button>';
+          }
+        }
+      } catch (err) {
+        showToast("补全失败：" + (err.message || "未知错误"));
+      } finally {
+        if (button) {
+          button.disabled = false;
+          delete button.dataset.busy;
+          button.textContent = originalLabel;
+        }
+      }
+    });
+  });
+
   const loginPanel = document.querySelector("[data-login-panel]");
   if (loginPanel) {
     const active = new Set(["requesting", "waiting", "scanned", "exchanging", "initializing"]);
@@ -228,4 +309,27 @@
 
     if (loginPanel.dataset.loginPoll === "1") pollLogin();
   }
+
+  // Batch operations - select all
+  const selectAll = document.getElementById("select-all");
+  if (selectAll) {
+    const checkboxes = document.querySelectorAll('input[name="source_ids"]');
+
+    selectAll.addEventListener("change", () => {
+      checkboxes.forEach(cb => {
+        cb.checked = selectAll.checked;
+      });
+    });
+
+    // Update select-all state when individual checkboxes change
+    checkboxes.forEach(cb => {
+      cb.addEventListener("change", () => {
+        const allChecked = Array.from(checkboxes).every(c => c.checked);
+        const someChecked = Array.from(checkboxes).some(c => c.checked);
+        selectAll.checked = allChecked;
+        selectAll.indeterminate = someChecked && !allChecked;
+      });
+    });
+  }
+
 })();

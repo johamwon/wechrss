@@ -161,3 +161,39 @@ def test_backfill_missing_article_url(tmp_path: Path, monkeypatch):
     resolved, failed = sync.backfill_source_urls(source.id, limit=5)
     assert (resolved, failed) == (1, 0)
     assert db.article_by_review("r-missing").url == "https://mp.weixin.qq.com/s/backfilled-token"
+
+
+def test_sync_does_not_clear_backfilled_url(tmp_path: Path, monkeypatch):
+    """端到端：手动/自动同步共同路径 sync_source() 不得用空 url 抹掉已补全的原文链接。"""
+    import service as service_module
+    from weread_auth import WeReadCredentials
+
+    db = AppDB(tmp_path / "db.sqlite")
+    source = db.add_source(source_value="MP_WXS_999", name="同步保留链接", fetch_content=False)
+    with db.connect() as conn:
+        save_article(conn, Article("r-keep", source.book_id, "已补全文章", url="", publish_at=1700000000))
+        conn.commit()
+    # 模拟用户点击「补全原文链接」写入真实链接
+    db.set_article_url("r-keep", "https://mp.weixin.qq.com/s/REAL-TOKEN")
+    assert db.article_by_review("r-keep").url == "https://mp.weixin.qq.com/s/REAL-TOKEN"
+
+    creds = CredentialStore(tmp_path / "credentials.json")
+    creds.save_record(WeReadCredentials(vid="999", accessToken="token", refreshToken="refresh", deviceId="dev"))
+
+    class FakeMobileClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        def get_articles(self, book_id, **kwargs):
+            # 上游 /mp/chapters 这次未返回 doc_url，url 为空
+            return [Article("r-keep", book_id, "已补全文章", url="", publish_at=1700000000)]
+
+    class FakeAuth:
+        def version_headers(self):
+            return {}
+
+    monkeypatch.setattr(service_module, "WeReadMobileClient", FakeMobileClient)
+    sync = SyncService(db, creds, auth_client=FakeAuth())
+    result = sync.sync_source(source.id)
+    assert result.status == "ok"
+    # 修复后：已补全的真实链接不被空值清空
+    assert db.article_by_review("r-keep").url == "https://mp.weixin.qq.com/s/REAL-TOKEN"

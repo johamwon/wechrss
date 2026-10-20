@@ -3,3 +3,4 @@ beautifulsoup4>=4.12,<5
 Jinja2>=3.1,<4
 qrcode[pil]>=8.0,<9
 playwright>=1.54,<2
+python-dotenv>=1.0,<2

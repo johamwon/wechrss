@@ -49,31 +49,47 @@
     {% if sources %}<span class="count-chip">{{ sources|length }} 个订阅</span>{% endif %}
   </div>
   {% if sources %}
-  <div class="source-list">
-    {% for s in sources %}
-    <article class="source-item">
-      <a class="source-main" href="/sources/{{ s.id }}" aria-label="查看 {{ s.name or s.book_id }}">
-        <span class="source-avatar">{{ (s.name or '公')[:1] }}</span>
-        <span class="source-copy">
-          <span class="source-title-line"><strong>{{ s.name or s.book_id }}</strong><span class="badge {{ s.last_status }}">{{ source_health_by_id[s.id].title }}</span>{% if not s.enabled %}<span class="badge paused">已暂停</span>{% endif %}</span>
-          <span class="source-meta">{{ s.article_count }} 篇文章 <i>·</i> {{ fmt_interval(s.sync_interval_minutes) }}同步</span>
-        </span>
-      </a>
-      <div class="source-schedule">
-        <span>{{ '下次同步' if s.enabled and experience.configured and not experience.account_issue and scheduler_enabled else '自动同步' }}</span>
-        <strong title="{{ fmt_ts(s.next_sync_at) }}">{{ fmt_relative_ts(s.next_sync_at) if s.enabled and experience.configured and not experience.account_issue and scheduler_enabled else experience.sync_label if s.enabled else '已暂停' }}</strong>
-      </div>
-      <div class="source-actions">
-        <button class="icon-button" type="button" data-copy="{{ feed_urls[s.id] }}" aria-label="复制 {{ s.name or s.book_id }} 的 RSS 地址" title="复制 RSS 地址">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="1.5"/><path d="M4 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V4"/></svg>
-        </button>
-        <a class="icon-button" href="/sources/{{ s.id }}" aria-label="打开订阅详情" title="查看详情">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 6 6-6 6"/></svg>
+  <form method="post" action="/sources/batch/delete" id="batch-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="batch-toolbar">
+      <label class="batch-select-all">
+        <input type="checkbox" id="select-all">
+        <span>全选</span>
+      </label>
+      <button class="button danger" type="submit" data-confirm="确定要删除选中的公众号吗？此操作不可恢复。">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6h8v10H6zM4 6h12M8 6V4h4v2"/></svg>
+        批量删除
+      </button>
+    </div>
+    <div class="source-list">
+      {% for s in sources %}
+      <article class="source-item">
+        <label class="source-checkbox">
+          <input type="checkbox" name="source_ids" value="{{ s.id }}">
+        </label>
+        <a class="source-main" href="/sources/{{ s.id }}" aria-label="查看 {{ s.name or s.book_id }}">
+          <span class="source-avatar">{{ (s.name or '公')[:1] }}</span>
+          <span class="source-copy">
+            <span class="source-title-line"><strong>{{ s.name or s.book_id }}</strong><span class="badge {{ s.last_status }}">{{ source_health_by_id[s.id].title }}</span>{% if not s.enabled %}<span class="badge paused">已暂停</span>{% endif %}</span>
+            <span class="source-meta">{{ s.article_count }} 篇文章 <i>·</i> {{ fmt_interval(s.sync_interval_minutes) }}同步</span>
+          </span>
         </a>
-      </div>
-    </article>
-    {% endfor %}
-  </div>
+        <div class="source-schedule">
+          <span>{{ '下次同步' if s.enabled and experience.configured and not experience.account_issue and scheduler_enabled else '自动同步' }}</span>
+          <strong title="{{ fmt_ts(s.next_sync_at) }}">{{ fmt_relative_ts(s.next_sync_at) if s.enabled and experience.configured and not experience.account_issue and scheduler_enabled else experience.sync_label if s.enabled else '已暂停' }}</strong>
+        </div>
+        <div class="source-actions">
+          <button class="icon-button" type="button" data-copy="{{ feed_urls[s.id] }}" aria-label="复制 {{ s.name or s.book_id }} 的 RSS 地址" title="复制 RSS 地址">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="1.5"/><path d="M4 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V4"/></svg>
+          </button>
+          <a class="icon-button" href="/sources/{{ s.id }}" aria-label="打开订阅详情" title="查看详情">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 6 6-6 6"/></svg>
+          </a>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </form>
   {% else %}
   <div class="empty-state">
     <span class="empty-illustration" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M17 18h30v24H28L17 50V18Z"/><path d="M25 26h14M25 33h10"/></svg></span>

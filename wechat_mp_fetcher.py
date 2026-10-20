@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 
 import requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
 from article_identity import ArticleIdentityError, resolve_article_identity
 
@@ -100,6 +101,25 @@ def normalize_book_id(value: str) -> str:
     raise FetcherError("book id 应为 MP_WXS_<数字> 或纯数字 BID")
 
 
+def synthesized_article_url(original_id: str) -> str:
+    """把裸 originalId 当作微信短链 token 拼出来的占位地址。
+
+    当 originalId 本身已是 http(s) 链接、/s 路径、? 查询串或含 __biz= 时，
+    视为上游给出的可信来源，返回空串表示「这不是拼出来的占位猜测」。
+    """
+    original = str(original_id or "").strip()
+    if not original or original.startswith(("http://", "https://", "/s")):
+        return ""
+    if "__biz=" in original or original.startswith("?"):
+        return ""
+    return f"{MP_BASE}/s/{quote(original, safe='._~-')}"
+
+
+def is_synthesized_article_url(url: str, original_id: str) -> bool:
+    """判断 url 是否只是从 originalId 拼出来的占位猜测，而非上游直接给出的链接。"""
+    return bool(url) and url == synthesized_article_url(original_id or "")
+
+
 def article_url_from_mpinfo(mp_info: dict[str, Any], review: dict[str, Any]) -> str:
     for candidate in (mp_info.get("doc_url"), mp_info.get("docUrl"), mp_info.get("url"), review.get("url")):
         if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
@@ -113,7 +133,7 @@ def article_url_from_mpinfo(mp_info: dict[str, Any], review: dict[str, Any]) -> 
         return MP_BASE + original
     if "__biz=" in original or original.startswith("?"):
         return f"{MP_BASE}/s?{original.lstrip('?')}"
-    return f"{MP_BASE}/s/{quote(original, safe='._~-')}"
+    return synthesized_article_url(original)
 
 
 def _to_int(value: Any, default: int = 0) -> int:
@@ -439,7 +459,13 @@ def save_article(conn: sqlite3.Connection, article: Article) -> None:
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(review_id) DO UPDATE SET
             title=excluded.title, summary=excluded.summary, cover_url=excluded.cover_url,
-            url=excluded.url, publish_at=excluded.publish_at, original_id=excluded.original_id,
+            url=CASE
+                WHEN excluded.url='' THEN articles.url
+                WHEN ? AND articles.url<>'' THEN articles.url
+                ELSE excluded.url
+            END,
+            publish_at=excluded.publish_at,
+            original_id=CASE WHEN excluded.original_id<>'' THEN excluded.original_id ELSE articles.original_id END,
             read_num=excluded.read_num, like_num=excluded.like_num,
             author=CASE WHEN excluded.author<>'' THEN excluded.author ELSE articles.author END,
             content_html=CASE WHEN excluded.content_html<>'' THEN excluded.content_html ELSE articles.content_html END,
@@ -449,6 +475,7 @@ def save_article(conn: sqlite3.Connection, article: Article) -> None:
             article.review_id, article.book_id, article.title, article.summary, article.cover_url, article.url,
             article.publish_at, article.original_id, article.read_num, article.like_num, article.author,
             article.content_html, json.dumps(article.raw or {}, ensure_ascii=False), int(time.time()),
+            int(is_synthesized_article_url(article.url, article.original_id)),
         ),
     )
 
@@ -574,6 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv(Path(__file__).resolve().parent / ".env")
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))

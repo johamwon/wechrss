@@ -8,7 +8,8 @@ import urllib.request
 
 
 def build_request() -> urllib.request.Request:
-    request = urllib.request.Request("http://127.0.0.1:8080/api/health")
+    port = int(os.getenv("PORT", "8080"))
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/health")
     password = os.getenv("ADMIN_PASSWORD", "")
     if password:
         token = base64.b64encode(("admin:" + password).encode()).decode("ascii")
@@ -19,7 +20,8 @@ def build_request() -> urllib.request.Request:
 def main() -> int:
     try:
         with urllib.request.urlopen(build_request(), timeout=5) as response:
-            return 0 if response.status == 200 and json.load(response).get("ok") is True else 1
+            payload = json.load(response)
+            return 0 if response.status == 200 and payload.get("alive", payload.get("ok")) is True else 1
     except Exception:
         return 1
 

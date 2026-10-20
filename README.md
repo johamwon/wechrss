@@ -1,11 +1,11 @@
 <div align="center">
-  <img src="./static/favicon.svg" width="82" height="82" alt="WeRSS logo">
-  <h1>WeRSS</h1>
+  <img src="./static/favicon.svg" width="82" height="82" alt="WechRss logo">
+  <h1>WechRss</h1>
   <p><strong>把微信公众号带回你的 RSS 阅读器。</strong></p>
   <p>扫码登录 · 自动同步 · 独立 Feed · 一键启动 · 完全自托管</p>
 
   <p>
-    <a href="https://github.com/johamwon/wechrss/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johamwon/wechrss/ci.yml?branch=main&style=flat-square&label=build" alt="Build status"></a>
+    <a href="https://github.com/johamwon/wechrss/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johamwon/wechrss/ci.yml?branch=main&style=flat-square&label=build"></a>
     <a href="https://github.com/johamwon/wechrss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/johamwon/wechrss?style=flat-square" alt="MIT license"></a>
     <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/version-4.2.0-16845b?style=flat-square" alt="Version 4.2.0">
@@ -21,15 +21,23 @@
   </p>
 </div>
 
-![WeRSS 订阅管理界面](./docs/assets/dashboard.png)
+## 📬 联系作者
 
-WeRSS 是一个简洁的微信公众号 RSS 助手。粘贴任意一篇公众号文章链接，它会识别公众号、定时同步文章元数据，并为每个公众号生成独立 Feed。数据和凭证都保存在你自己的设备上。
+对 WechRss 有建议、问题或定制需求，欢迎扫码添加作者微信：
 
-> 如果 WeRSS 对你有帮助，欢迎点一个 [Star](https://github.com/johamwon/wechrss) ⭐。这会让更多喜欢 RSS 的人发现它。
+<p align="center"><img src="./static/qrcode.png" width="200" height="200" alt="作者微信二维码 · 扫码联系"></p>
+
+> 💡 不想本地部署？可在 [ModelScope 创空间](https://www.modelscope.cn/studios/johamwon/wechrss) 在线体验。演示实例为共享环境，数据不定期清理，请勿存放重要订阅。
+
+![WechRss 订阅管理界面](./docs/assets/dashboard.png)
+
+WechRss 是一个简洁的微信公众号 RSS 助手。粘贴任意一篇公众号文章链接，它会识别公众号、定时同步文章元数据，并为每个公众号生成独立 Feed。数据和凭证保存在本地，支持一键启动和完全自托管。
+
+> 如果 WechRss 对你有帮助，欢迎点一个 [Star](https://github.com/johamwon/wechrss) ⭐。这会让更多喜欢 RSS 的人发现它。
 
 <a id="features"></a>
 
-## ✨ 为什么选择 WeRSS
+## ✨ 为什么选择 WechRss
 
 | | 能力 | 体验 |
 |---|---|---|
@@ -136,12 +144,12 @@ flowchart LR
     E --> F[任意 RSS 阅读器]
 ```
 
-WeRSS 获取并保存文章的标题、发布时间、封面、摘要和微信原文链接。Feed 始终把阅读行为带回原文页面，Web 与 CLI 默认流程不会抓取或保存文章正文。
+WechRss 获取并保存文章的标题、发布时间、封面、摘要和微信原文链接。Feed 始终把阅读行为带回原文页面，Web 与 CLI 默认流程不会抓取或保存文章正文。
 
 ## 🔒 部署与使用边界
 
 > [!IMPORTANT]
-> 本项目依赖非公开且可能变化的微信读书移动端接口。请仅访问你有权访问的内容，并遵守相关平台条款。WeRSS 不处理验证码、不绕过人工验证，也不会通过代理轮换或高频重试规避风控。
+> 本项目依赖非公开且可能变化的微信读书移动端接口。请仅访问你有权访问的内容，并遵守相关平台条款。WechRss 不处理验证码、不绕过人工验证，也不[...]
 
 默认 Docker 端口仅绑定本机：
 
@@ -171,6 +179,7 @@ ADMIN_PASSWORD=换成足够强的密码
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
 | `ADMIN_PASSWORD` | 空 | Web Basic Auth 密码；远程访问时必须设置 |
+| `ALLOWED_FRAME_ANCESTORS` | 空 | 允许以 iframe 嵌入本站的源（空格分隔）；留空禁止嵌入。部署到 ModelScope 创空间等平台时设为平台域名 |
 | `BIND_ADDRESS` | `127.0.0.1` | Compose 暴露地址 |
 | `PORT` | `8080` | 服务端口 |
 | `PUBLIC_BASE_URL` | 空 | 阅读器可访问的服务根地址；Web 设置保存值优先 |
@@ -207,7 +216,7 @@ docker compose start
 <details>
 <summary><strong>出现 -2041、HTTP 429 或要求验证怎么办？</strong></summary>
 
-停止重复请求，打开官方微信读书或微信完成人工操作，等待一段时间后再手动尝试一次。WeRSS 不会自动重试这些状态。
+停止重复请求，打开官方微信读书或微信完成人工操作，等待一段时间后再手动尝试一次。WechRss 不会自动重试这些状态。
 
 </details>
 
@@ -283,7 +292,7 @@ ruff check .
 
 <div align="center">
   <p><strong>让好内容回到开放、安静、可掌控的阅读方式。</strong></p>
-  <p>如果你也喜欢 RSS，请为 WeRSS 点一个 ⭐ Star。</p>
-  <p><a href="https://github.com/johamwon/wechrss">⭐ Star WeRSS</a></p>
-  <sub><a href="./LICENSE">MIT License</a> · WeRSS contributors</sub>
+  <p>如果你也喜欢 RSS，请为 WechRss 点一个 ⭐ Star。</p>
+  <p><a href="https://github.com/johamwon/wechrss">⭐ Star WechRss</a></p>
+  <sub><a href="./LICENSE">MIT License</a> · WechRss contributors</sub>
 </div>

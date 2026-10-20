@@ -429,3 +429,22 @@ def test_container_probe_fails_when_process_is_unavailable(monkeypatch):
         raise OSError("connection refused")
     monkeypatch.setattr(healthcheck.urllib.request, "urlopen", unavailable)
     assert healthcheck.main() == 1
+
+
+def test_container_probe_uses_custom_port_and_liveness_without_connected_account(monkeypatch):
+    from io import BytesIO
+    from scripts import healthcheck
+    monkeypatch.setenv("PORT", "7860")
+    assert healthcheck.build_request().full_url == "http://127.0.0.1:7860/api/health"
+    class Response(BytesIO):
+        status = 200
+    monkeypatch.setattr(healthcheck.urllib.request, "urlopen", lambda *args, **kwargs: Response(
+        b'{"alive":true,"ok":false,"credentials":{"configured":false}}'))
+    assert healthcheck.main() == 0
+
+
+def test_automatic_backfill_honors_account_failure_pause(app):
+    app.scheduler.set_backfill_enabled(True)
+    app.db.set_setting("account_issue", "risk_control")
+    assert app.scheduler.maybe_backfill() is None
+    assert not app.db.get_setting("backfill_last_run_at")

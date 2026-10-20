@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 import secrets
+import logging
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -27,6 +32,8 @@ from wechat_mp_fetcher import (
     render_rss,
     save_article,
 )
+
+logger = logging.getLogger("wechrss.service")
 
 APP_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -63,6 +70,17 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    event_type TEXT NOT NULL DEFAULT 'all',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    last_triggered_at INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT NOT NULL DEFAULT 'never',
+    last_error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_webhooks_event ON webhooks(event_type, enabled);
 """
 
 
@@ -412,6 +430,23 @@ class AppDB:
                 conn.execute("DELETE FROM articles WHERE book_id=?", (source.book_id,))
             conn.commit()
 
+    def delete_sources_batch(self, source_ids: list[int]) -> int:
+        if not source_ids:
+            return 0
+        placeholders = ",".join("?" for _ in source_ids)
+        with self.connect() as conn:
+            book_ids = [r[0] for r in conn.execute(
+                f"SELECT book_id FROM sources WHERE id IN ({placeholders})", source_ids
+            ).fetchall()]
+            deleted = conn.execute(
+                f"DELETE FROM sources WHERE id IN ({placeholders})", source_ids
+            ).rowcount
+            if book_ids:
+                bp = ",".join("?" for _ in book_ids)
+                conn.execute(f"DELETE FROM articles WHERE book_id IN ({bp})", book_ids)
+            conn.commit()
+        return deleted
+
     def due_sources(self, now: int | None = None) -> list[Source]:
         now = int(now or time.time())
         with self.connect() as conn:
@@ -494,6 +529,148 @@ class AppDB:
                 (book_id, max(1, min(int(limit), 20))),
             ).fetchall()
         return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
+    def sources_with_missing_urls(self) -> list[Source]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT s.*, (SELECT COUNT(*) FROM articles a WHERE a.book_id=s.book_id) AS article_count
+                   FROM sources s WHERE s.enabled=1
+                     AND EXISTS (
+                       SELECT 1 FROM articles a WHERE a.book_id=s.book_id AND (a.url='' OR a.url IS NULL)
+                     )
+                   ORDER BY s.updated_at DESC"""
+            ).fetchall()
+        return [self._row_to_source(r) for r in rows]
+
+    def list_webhooks(self) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM webhooks ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def add_webhook(self, url: str, event_type: str = "all") -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO webhooks(url, event_type, created_at) VALUES(?, ?, ?)",
+                (url, event_type, int(time.time())),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def update_webhook(self, webhook_id: int, *, url: str | None = None, event_type: str | None = None, enabled: bool | None = None) -> None:
+        fields, values = [], []
+        if url is not None:
+            fields.append("url=?"); values.append(url)
+        if event_type is not None:
+            fields.append("event_type=?"); values.append(event_type)
+        if enabled is not None:
+            fields.append("enabled=?"); values.append(1 if enabled else 0)
+        if fields:
+            values.append(webhook_id)
+            with self.connect() as conn:
+                conn.execute(f"UPDATE webhooks SET {','.join(fields)} WHERE id=?", values)
+                conn.commit()
+
+    def delete_webhook(self, webhook_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM webhooks WHERE id=?", (webhook_id,))
+            conn.commit()
+
+    def record_webhook_trigger(self, webhook_id: int, success: bool, error: str = "") -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE webhooks SET last_triggered_at=?, last_status=?, last_error=? WHERE id=?",
+                (int(time.time()), "ok" if success else "failed", error, webhook_id),
+            )
+            conn.commit()
+
+    def search_articles(self, query: str, *, book_id: str | None = None, limit: int = 50) -> list[Article]:
+        query = query.strip()
+        if not query:
+            return []
+        limit = max(1, min(int(limit), 200))
+        like = f"%{query}%"
+        with self.connect() as conn:
+            if book_id:
+                rows = conn.execute(
+                    "SELECT * FROM articles WHERE (title LIKE ? OR summary LIKE ?) AND book_id=? ORDER BY publish_at DESC LIMIT ?",
+                    (like, like, book_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM articles WHERE title LIKE ? OR summary LIKE ? ORDER BY publish_at DESC LIMIT ?",
+                    (like, like, limit),
+                ).fetchall()
+        return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
+
+    def get_filter_rules(self, source_id: int) -> list[dict]:
+        rules_json = self.get_setting(f"filter_rules_{source_id}", "[]")
+        try:
+            return json.loads(rules_json)
+        except Exception:
+            return []
+
+    def set_filter_rules(self, source_id: int, rules: list[dict]) -> None:
+        self.set_setting(f"filter_rules_{source_id}", json.dumps(rules))
+
+    def matches_filter(self, article_title: str, rules: list[dict]) -> bool:
+        if not rules:
+            return True
+        for rule in rules:
+            pattern = rule.get("pattern", "")
+            rule_type = rule.get("type", "include")
+            try:
+                if re.search(pattern, article_title, re.IGNORECASE):
+                    return rule_type == "include"
+            except Exception:
+                continue
+        return True
+
+    def check_integrity(self) -> dict:
+        with self.connect() as conn:
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+        errors = [r[0] for r in rows if r[0] != "ok"]
+        return {"ok": len(errors) == 0, "errors": errors}
+
+    def get_stats(self) -> dict:
+        with self.connect() as conn:
+            sources = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+            articles = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+            sync_runs = conn.execute("SELECT COUNT(*) FROM sync_runs").fetchone()[0]
+        db_size = self.path.stat().st_size if self.path.exists() else 0
+        return {"sources": sources, "articles": articles, "sync_runs": sync_runs, "db_size_bytes": db_size}
+
+    def get_recent_sync_stats(self, hours: int = 24) -> dict:
+        cutoff = int(time.time()) - hours * 3600
+        with self.connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ?", (cutoff,)
+            ).fetchone()[0]
+            success = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE started_at >= ? AND status = 'ok'", (cutoff,)
+            ).fetchone()[0]
+        failed = total - success
+        rate = (success / total * 100) if total > 0 else 100.0
+        return {"hours": hours, "total": total, "success": success, "failed": failed, "success_rate": round(rate, 2)}
+
+    def create_backup(self, backup_path: Path | None = None) -> Path:
+        if backup_path is None:
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            backup_path = self.path.with_suffix(f".backup-{timestamp}.db")
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.connect() as source_conn:
+            backup_conn = sqlite3.connect(str(backup_path))
+            try:
+                source_conn.backup(backup_conn)
+            finally:
+                backup_conn.close()
+        return backup_path
+
+
+class _PartialBackfillError(Exception):
+    """Raised when backfill completes partially before hitting risk control."""
+    def __init__(self, resolved: int, failed: int):
+        self.resolved = resolved
+        self.failed = failed
+        super().__init__(f"Backfill interrupted: {resolved} resolved, {failed} failed")
 
 
 class SyncService:
@@ -531,6 +708,10 @@ class SyncService:
     def is_queued(self, source_id: int) -> bool:
         with self._queue_lock:
             return source_id in self._queued
+
+    def has_pending_sync(self) -> bool:
+        with self._queue_lock:
+            return bool(self._queued)
 
     def queue_sync(self, source_id: int) -> None:
         if not self.credentials.status()["configured"]:
@@ -652,9 +833,38 @@ class SyncService:
                 self.db.set_setting("account_issue", result.status)
             elif result.status == "ok":
                 self.clear_account_issue()
+            if result.status == "ok" and result.new_count > 0:
+                self.notify_webhooks("new_articles", {
+                    "source_id": source.id,
+                    "source_name": source.name,
+                    "book_id": source.book_id,
+                    "new_count": result.new_count,
+                    "received": result.received,
+                })
             return result
         finally:
             self._lock.release()
+
+    def notify_webhooks(self, event: str, payload: dict) -> None:
+        webhooks = self.db.list_webhooks()
+        for wh in webhooks:
+            if not wh.get("enabled"):
+                continue
+            if wh.get("event_type", "all") not in ("all", event):
+                continue
+            try:
+                data = json.dumps({"event": event, **payload}, ensure_ascii=False).encode("utf-8")
+                req = urllib.request.Request(
+                    wh["url"], data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    success = 200 <= resp.status < 300
+                    self.db.record_webhook_trigger(wh["id"], success)
+            except Exception as exc:
+                logger.warning("Webhook %s failed: %s", wh["url"], exc)
+                self.db.record_webhook_trigger(wh["id"], False, str(exc))
 
     def _resolve_url_with_auto_refresh(self, review_id: str) -> str:
         try:
@@ -691,24 +901,142 @@ class SyncService:
         source = self.db.get_source(source_id)
         if not source:
             raise FetcherError("公众号不存在")
-        missing = self.db.missing_url_articles(source.book_id, limit=limit)
-        if not missing:
-            return 0, 0
-        resolved = 0
-        failed = 0
-        for article in missing:
+        if not self._lock.acquire(blocking=False):
+            raise FetcherError("已有同步任务正在运行，请稍后再试")
+        try:
+            missing = self.db.missing_url_articles(source.book_id, limit=limit)
+            if not missing:
+                return 0, 0
+            resolved = 0
+            failed = 0
             try:
-                url = self._resolve_url_with_auto_refresh(article.review_id)
-                if url:
-                    self.db.set_article_url(article.review_id, url)
-                    resolved += 1
-                else:
-                    failed += 1
+                for article in missing:
+                    try:
+                        url = self._resolve_url_with_auto_refresh(article.review_id)
+                        if url:
+                            self.db.set_article_url(article.review_id, url)
+                            resolved += 1
+                        else:
+                            failed += 1
+                    except (RiskControlError, AuthExpiredError):
+                        raise
+                    except Exception:
+                        failed += 1
             except (RiskControlError, AuthExpiredError):
-                raise
+                raise _PartialBackfillError(resolved, failed)
+            return resolved, failed
+        finally:
+            self._lock.release()
+
+    def auto_backfill_once(self) -> dict[str, Any]:
+        """Run one round of auto-backfill: randomly pick one source and backfill up to 5 articles."""
+        import random
+        sources = self.db.sources_with_missing_urls()
+        if not sources:
+            return {"status": "empty", "resolved": 0, "failed": 0, "source_id": None}
+        source = random.choice(sources)
+        try:
+            resolved, failed = self.backfill_source_urls(source.id, limit=5)
+            return {"status": "ok", "resolved": resolved, "failed": failed, "source_id": source.id, "source_name": source.name}
+        except _PartialBackfillError as exc:
+            return {"status": "interrupted", "resolved": exc.resolved, "failed": exc.failed, "source_id": source.id, "source_name": source.name, "error": str(exc)}
+        except (RiskControlError, AuthExpiredError) as exc:
+            return {"status": "error", "resolved": 0, "failed": 0, "source_id": source.id, "source_name": source.name, "error": str(exc)}
+
+
+    def export_opml(self, base_url: str = "") -> str:
+        """Generate OPML 2.0 XML containing all sources."""
+        sources = self.db.list_sources()
+
+        opml = ET.Element("opml", version="2.0")
+        head = ET.SubElement(opml, "head")
+        title_elem = ET.SubElement(head, "title")
+        title_elem.text = "WechRss Subscriptions"
+        date_created = ET.SubElement(head, "dateCreated")
+        date_created.text = datetime.now().strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+        body = ET.SubElement(opml, "body")
+
+        for source in sources:
+            feed_url = f"{base_url.rstrip('/')}/feeds/{source.id}.xml" if base_url else f"/feeds/{source.id}.xml"
+            detail_url = f"{base_url.rstrip('/')}/sources/{source.id}" if base_url else f"/sources/{source.id}"
+
+            outline = ET.SubElement(body, "outline")
+            outline.set("type", "rss")
+            outline.set("text", source.name or source.book_id)
+            outline.set("title", source.name or source.book_id)
+            outline.set("xmlUrl", feed_url)
+            outline.set("htmlUrl", detail_url)
+            outline.set("bookId", source.book_id)
+
+        xml_str = ET.tostring(opml, encoding="unicode", xml_declaration=False)
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
+
+    def import_opml(self, opml_content: str) -> dict[str, int]:
+        """Parse OPML XML and create sources from outline entries.
+
+        Returns dict with counts: imported, skipped, failed
+        """
+        import re
+        result = {"imported": 0, "skipped": 0, "failed": 0}
+
+        try:
+            root = ET.fromstring(opml_content)
+        except ET.ParseError as exc:
+            raise FetcherError(f"OPML 文件解析失败：{exc}")
+
+        if root.tag != "opml":
+            raise FetcherError("不是有效的 OPML 文件")
+
+        body = root.find("body")
+        if body is None:
+            raise FetcherError("OPML 文件缺少 <body> 元素")
+
+        for outline in body.findall("outline"):
+            try:
+                name = outline.get("text") or outline.get("title") or ""
+                book_id = outline.get("bookId") or ""
+                xml_url = outline.get("xmlUrl") or ""
+
+                if not book_id and xml_url:
+                    match = re.search(r'/feeds/(\d+)\.xml', xml_url)
+                    if match:
+                        result["skipped"] += 1
+                        continue
+
+                if not book_id:
+                    if name.startswith("MP_WXS_") or name.isdigit():
+                        book_id = name
+                    else:
+                        result["skipped"] += 1
+                        continue
+
+                if book_id.isdigit():
+                    book_id = f"MP_WXS_{book_id}"
+
+                existing = None
+                for src in self.db.list_sources():
+                    if src.book_id == book_id:
+                        existing = src
+                        break
+
+                if existing:
+                    result["skipped"] += 1
+                    continue
+
+                self.db.add_source(
+                    source_value=book_id,
+                    name=name if name != book_id else "",
+                    interval_minutes=360,
+                    fetch_content=False,
+                    rss_limit=50
+                )
+                result["imported"] += 1
+
             except Exception:
-                failed += 1
-        return resolved, failed
+                result["failed"] += 1
+
+        return result
 
     def feed_bytes(self, source_id: int, base_url: str = "") -> bytes:
         source = self.db.get_source(source_id)
@@ -725,6 +1053,9 @@ class Scheduler:
         self.service = service
         self.poll_seconds = max(10, int(poll_seconds))
         self.enabled = self.db.get_setting("scheduler_enabled", "1") != "0"
+        self.backfill_enabled = self.db.get_setting("backfill_enabled", "0") == "1"
+        self._backfill_interval = int(self.db.get_setting("backfill_interval_minutes", "60"))
+        self._backfill_last_run = int(self.db.get_setting("backfill_last_run_at", "0"))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -738,6 +1069,46 @@ class Scheduler:
     def stop(self) -> None:
         self._stop.set()
 
+    def set_backfill_enabled(self, enabled: bool) -> None:
+        self.backfill_enabled = enabled
+        self.db.set_setting("backfill_enabled", "1" if enabled else "0")
+
+    def set_backfill_interval(self, minutes: int) -> None:
+        self._backfill_interval = max(60, min(int(minutes), 10080))
+        self.db.set_setting("backfill_interval_minutes", str(self._backfill_interval))
+
+    @property
+    def backfill_interval(self) -> int:
+        return self._backfill_interval
+
+    @property
+    def backfill_last_result(self) -> str:
+        return self.db.get_setting("backfill_last_result", "")
+
+    def maybe_backfill(self) -> dict[str, Any] | None:
+        """Run a backfill round if enabled and interval has elapsed. Returns result or None."""
+        if not self.backfill_enabled or self.service.account_issue() or self.service.has_pending_sync():
+            return None
+        now = int(time.time())
+        if now - self._backfill_last_run < self._backfill_interval * 60:
+            return None
+        return self._do_backfill(now)
+
+    def _do_backfill(self, now: int) -> dict[str, Any]:
+        self._backfill_last_run = now
+        self.db.set_setting("backfill_last_run_at", str(now))
+        try:
+            result = self.service.auto_backfill_once()
+            import json
+            result["timestamp"] = now
+            self.db.set_setting("backfill_last_result", json.dumps(result, ensure_ascii=False))
+            return result
+        except Exception as exc:
+            import json
+            err_result = {"status": "error", "error": str(exc), "timestamp": now}
+            self.db.set_setting("backfill_last_result", json.dumps(err_result, ensure_ascii=False))
+            return err_result
+
     def _run(self) -> None:
         while not self._stop.is_set():
             if self.enabled and self.service.credentials.status()["configured"] and not self.service.account_issue():
@@ -749,6 +1120,9 @@ class Scheduler:
                     try:
                         self.service.queue_sync(source.id)
                     except Exception:
-                        # 单个任务不能让后台调度线程退出；具体同步错误由 SyncService 记录。
                         pass
+                try:
+                    self.maybe_backfill()
+                except Exception:
+                    pass
             self._stop.wait(self.poll_seconds)
