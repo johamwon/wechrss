@@ -7,19 +7,19 @@
     <h1>公众号订阅</h1>
     <p>集中收取微信公众号文章，生成干净、稳定的 RSS Feed。</p>
   </div>
-  <a class="button primary" href="/sources/new">
+  <a class="button {{ 'primary' if experience.configured else '' }}" href="/sources/new">
     <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
     添加公众号
   </a>
 </section>
 
-{% if not credential_status.configured %}
+{% if not experience.onboarding_complete %}
 <section class="setup-banner">
   <div class="setup-icon" aria-hidden="true">
     <svg viewBox="0 0 24 24"><path d="M5 7.5h14v9h-8l-6 4v-13Z"/><path d="m15.5 6 2 2 3.5-4"/></svg>
   </div>
-  <div><strong>先连接微信读书账号</strong><p>扫码登录后即可同步文章，通常不到一分钟。</p></div>
-  <a class="button subtle" href="/settings#login">去连接 <span aria-hidden="true">→</span></a>
+  <div><strong>完成你的第一份 RSS 订阅</strong><p>连接账号 → 添加公众号 → 首次同步 → 在阅读器确认。进度会自动保留。</p></div>
+  <a class="button primary" href="/onboarding">{{ '继续首次订阅' if sources or experience.configured else '开始首次订阅' }} <span aria-hidden="true">→</span></a>
 </section>
 {% endif %}
 
@@ -35,7 +35,7 @@
   </article>
   <article class="metric-card">
     <span class="metric-icon amber" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6v4l3 2"/></svg></span>
-    <div><strong>{{ '运行中' if scheduler_enabled else '已暂停' }}</strong><span>自动同步</span></div>
+    <div><strong data-sync-label>{{ experience.sync_label }}</strong><span>自动同步</span></div>
   </article>
   <article class="metric-card">
     <span class="metric-icon violet" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="7" r="3"/><path d="M4.5 17c.6-3 2.4-4.5 5.5-4.5S15 14 15.5 17"/></svg></span>
@@ -55,16 +55,16 @@
       <a class="source-main" href="/sources/{{ s.id }}" aria-label="查看 {{ s.name or s.book_id }}">
         <span class="source-avatar">{{ (s.name or '公')[:1] }}</span>
         <span class="source-copy">
-          <span class="source-title-line"><strong>{{ s.name or s.book_id }}</strong><span class="badge {{ s.last_status }}">{{ status_label(s.last_status) }}</span>{% if not s.enabled %}<span class="badge paused">已暂停</span>{% endif %}</span>
+          <span class="source-title-line"><strong>{{ s.name or s.book_id }}</strong><span class="badge {{ s.last_status }}">{{ source_health_by_id[s.id].title }}</span>{% if not s.enabled %}<span class="badge paused">已暂停</span>{% endif %}</span>
           <span class="source-meta">{{ s.article_count }} 篇文章 <i>·</i> {{ fmt_interval(s.sync_interval_minutes) }}同步</span>
         </span>
       </a>
       <div class="source-schedule">
-        <span>{{ '下次同步' if s.enabled else '自动同步' }}</span>
-        <strong title="{{ fmt_ts(s.next_sync_at) }}">{{ fmt_relative_ts(s.next_sync_at) if s.enabled else '已暂停' }}</strong>
+        <span>{{ '下次同步' if s.enabled and experience.configured and not experience.account_issue and scheduler_enabled else '自动同步' }}</span>
+        <strong title="{{ fmt_ts(s.next_sync_at) }}">{{ fmt_relative_ts(s.next_sync_at) if s.enabled and experience.configured and not experience.account_issue and scheduler_enabled else experience.sync_label if s.enabled else '已暂停' }}</strong>
       </div>
       <div class="source-actions">
-        <button class="icon-button" type="button" data-copy="{{ base_url }}/feeds/{{ s.id }}.xml" aria-label="复制 {{ s.name or s.book_id }} 的 RSS 地址" title="复制 RSS 地址">
+        <button class="icon-button" type="button" data-copy="{{ feed_urls[s.id] }}" aria-label="复制 {{ s.name or s.book_id }} 的 RSS 地址" title="复制 RSS 地址">
           <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="1.5"/><path d="M4 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V4"/></svg>
         </button>
         <a class="icon-button" href="/sources/{{ s.id }}" aria-label="打开订阅详情" title="查看详情">
@@ -79,7 +79,7 @@
     <span class="empty-illustration" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M17 18h30v24H28L17 50V18Z"/><path d="M25 26h14M25 33h10"/></svg></span>
     <h3>从一个常读的公众号开始</h3>
     <p>粘贴任意一篇公众号文章链接，我们会自动识别并创建 RSS。</p>
-    <a class="button primary" href="/sources/new">添加第一个公众号</a>
+    <a class="button primary" href="/onboarding">{{ '添加第一个公众号' if experience.configured else '开始首次订阅' }}</a>
   </div>
   {% endif %}
 </section>

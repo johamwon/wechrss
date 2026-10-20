@@ -57,10 +57,98 @@
       const button = form.querySelector('button[type="submit"], button:not([type])');
       if (!button) return;
       button.disabled = true;
+      button.dataset.busy = "1";
       button.dataset.originalLabel = button.textContent.trim();
       button.textContent = form.dataset.loadingLabel || "处理中…";
     });
   });
+
+  const alertPanel = document.querySelector("[data-health-alerts]");
+  async function pollHealth() {
+    if (document.hidden) {
+      setTimeout(pollHealth, 20000);
+      return;
+    }
+    try {
+      const response = await fetch("/api/experience", { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error("health unavailable");
+      const state = await response.json();
+      alertPanel?.querySelector("[data-offline]")?.remove();
+      document.querySelectorAll("[data-sync-label]").forEach((label) => { label.textContent = state.sync_label; });
+      const accountChip = document.querySelector(".account-chip");
+      accountChip?.classList.toggle("online", state.configured && !state.account_issue);
+      accountChip?.classList.toggle("offline", !state.configured || Boolean(state.account_issue));
+      const alerts = state.alerts || [];
+      const keys = alerts.map((alert) => alert.key).join(",");
+      if (alertPanel) alertPanel.hidden = alerts.length === 0;
+      if (alertPanel && keys !== alertPanel.dataset.alertKeys) {
+        alertPanel.replaceChildren();
+        alerts.forEach((alert) => {
+          const row = document.createElement("div");
+          row.className = "health-alert";
+          const copy = document.createElement("div");
+          const title = document.createElement("strong");
+          title.textContent = alert.title;
+          const message = document.createElement("p");
+          message.textContent = alert.message;
+          const action = document.createElement("a");
+          action.className = "button";
+          action.href = alert.href;
+          action.textContent = alert.action;
+          copy.append(title, message);
+          row.append(copy, action);
+          alertPanel.append(row);
+        });
+        alertPanel.hidden = alerts.length === 0;
+        alertPanel.dataset.alertKeys = keys;
+        if (alerts.length) showToast("有订阅需要处理，请查看页面顶部提示");
+      }
+    } catch (_) {
+      // A disconnected browser must not look like a healthy service.
+      if (alertPanel && !alertPanel.querySelector("[data-offline]")) {
+        const warning = document.createElement("p");
+        warning.dataset.offline = "1";
+        warning.textContent = "暂时无法连接服务，状态可能不是最新。请检查服务是否运行后刷新页面。";
+        alertPanel.append(warning);
+        alertPanel.hidden = false;
+      }
+    }
+    setTimeout(pollHealth, 20000);
+  }
+  if (alertPanel) {
+    // Initial warnings are server rendered and persist across restarts.
+    setTimeout(pollHealth, 20000);
+  }
+
+  const syncWatch = document.querySelector("[data-sync-watch]");
+  if (syncWatch) {
+    let failures = 0;
+    async function pollSync() {
+      try {
+        const response = await fetch("/api/sources/" + syncWatch.dataset.syncWatch + "/status", {
+          cache: "no-store", credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error("sync status unavailable");
+        const state = await response.json();
+        failures = 0;
+        if (!state.health.busy) {
+          window.location.reload();
+          return;
+        }
+      } catch (_) {
+        failures += 1;
+        if (failures === 3) {
+          const warning = document.createElement("p");
+          warning.setAttribute("role", "alert");
+          warning.textContent = "暂时无法获取同步进度。请检查服务是否运行，然后刷新页面；请勿重复提交同步。";
+          syncWatch.append(warning);
+          return;
+        }
+      }
+      setTimeout(pollSync, 1500);
+    }
+    setTimeout(pollSync, 1000);
+  }
 
   const loginPanel = document.querySelector("[data-login-panel]");
   if (loginPanel) {
@@ -128,7 +216,7 @@
         const status = applyLoginState(state);
         if (status === "success") {
           setTimeout(() => {
-            window.location.href = "/settings?message=" + encodeURIComponent("扫码登录成功");
+            window.location.href = loginPanel.dataset.loginReturn || "/settings";
           }, 700);
           return;
         }
@@ -138,6 +226,6 @@
       }
     }
 
-    pollLogin();
+    if (loginPanel.dataset.loginPoll === "1") pollLogin();
   }
 })();

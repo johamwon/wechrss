@@ -10,38 +10,30 @@
       <p><code>{{ source.book_id }}</code><span>·</span>{{ source.article_count }} 篇文章</p>
     </div>
   </div>
-  <form method="post" action="/sources/{{ source.id }}/sync" data-loading-form data-loading-label="同步中…">
+  <form method="post" action="/sources/{{ source.id }}/sync" data-loading-form data-loading-label="正在排队…">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="button primary" type="submit">
+    <button class="button primary" type="submit" {% if health.busy or not experience.configured %}disabled{% endif %}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 12M15.5 3v4h-4"/></svg>
-      立即同步
+      {{ '同步进行中' if health.busy else '重新检查一次' if experience.account_issue else '立即同步' }}
     </button>
   </form>
 </section>
 
-{% if source.last_error %}
-<div class="flash error persistent" role="alert"><span aria-hidden="true">!</span><div><strong>最近同步未完成</strong><p>{{ source.last_error }}</p></div></div>
-{% endif %}
+<section class="sync-health {{ health.code }}" {% if health.busy %}data-sync-watch="{{ source.id }}"{% endif %} aria-label="订阅健康状态">
+  <div><strong role="status" aria-live="polite">{{ health.title }}</strong><p>{{ health.message }}</p>
+    <p class="field-help">上次尝试：{{ fmt_relative_ts(source.last_sync_at) }} · 上次成功：{{ fmt_relative_ts(source.last_success_at) }} · 最近收录新文章：{{ fmt_relative_ts(source.last_new_at) }}</p>
+  </div>{% if health.action %}<a class="button" href="{{ health.href }}">{{ health.action }}</a>{% endif %}
+  {% if source.last_error %}<details><summary>错误详情</summary><p>{{ source.last_error }}</p></details>{% endif %}
+</section>
 
 <section class="metric-grid compact-metrics" aria-label="同步概览">
   <article class="metric-card"><span class="metric-icon green" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 4.5h12v12H4zM7 7h6M7 10h6M7 13h4"/></svg></span><div><strong>{{ source.article_count }}</strong><span>文章总数</span></div></article>
-  <article class="metric-card"><span class="metric-icon blue" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6v4l3 2"/></svg></span><div><strong title="{{ fmt_ts(source.last_sync_at) }}">{{ fmt_relative_ts(source.last_sync_at) }}</strong><span>上次同步</span></div></article>
-  <article class="metric-card"><span class="metric-icon amber" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 6h12M6 3.5v4M14 3.5v4M4 6v10h12V6zM7 10h2M11 10h2M7 13h2"/></svg></span><div><strong title="{{ fmt_ts(source.next_sync_at) }}">{{ fmt_relative_ts(source.next_sync_at) if source.enabled else '已暂停' }}</strong><span>下次同步</span></div></article>
+  <article class="metric-card"><span class="metric-icon blue" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5"/><path d="M10 6v4l3 2"/></svg></span><div><strong title="{{ fmt_ts(source.last_success_at) }}">{{ fmt_relative_ts(source.last_success_at) }}</strong><span>上次成功同步</span></div></article>
+  <article class="metric-card"><span class="metric-icon amber" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 6h12M6 3.5v4M14 3.5v4M4 6v10h12V6zM7 10h2M11 10h2M7 13h2"/></svg></span><div><strong title="{{ fmt_ts(source.next_sync_at) }}">{{ fmt_relative_ts(source.next_sync_at) if source.enabled and experience.configured and not experience.account_issue and scheduler_enabled else experience.sync_label if source.enabled else '已暂停' }}</strong><span>下次同步</span></div></article>
   <article class="metric-card"><span class="metric-icon violet" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 4h12v12H4zM7 13c0-3 3-6 6-6M7 9a4 4 0 0 1 4 4M7 13h.1"/></svg></span><div><strong>{{ source.rss_limit }}</strong><span>Feed 文章上限</span></div></article>
 </section>
 
-<section class="card rss-card">
-  <div class="card-header"><div><h2>RSS Feed</h2><p>复制下面的地址并添加到任意 RSS 阅读器</p></div><span class="badge ok">可订阅</span></div>
-  <div class="copy-field">
-    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4h12v12H4zM7 13c0-3 3-6 6-6M7 9a4 4 0 0 1 4 4M7 13h.1"/></svg>
-    <input id="feed-url" value="{{ feed_url }}" readonly aria-label="RSS Feed 地址">
-    <button class="button copy-button" type="button" data-copy-target="#feed-url">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="1.5"/><path d="M4 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V4"/></svg>
-      复制地址
-    </button>
-    <a class="button icon-only" href="/feeds/{{ source.id }}.xml" target="_blank" aria-label="在新窗口打开 Feed" title="打开 Feed"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 4H4v12h12v-4M10 10l6-6M11 4h5v5"/></svg></a>
-  </div>
-</section>
+{% include "_feed_setup.html" %}
 
 <section class="card">
   <div class="card-header article-header">
@@ -88,7 +80,7 @@
         <div class="field-group"><label for="name">显示名称</label><input id="name" name="name" maxlength="120" value="{{ source.name }}"></div>
         <div class="field-group"><label for="interval">同步间隔（分钟）</label><input id="interval" type="number" min="60" max="10080" name="interval_minutes" value="{{ source.sync_interval_minutes }}"></div>
       </div>
-      <div class="field-group"><label for="limit">Feed 文章上限</label><input id="limit" type="number" min="10" max="500" name="rss_limit" value="{{ source.rss_limit }}"></div>
+        <div class="field-group"><label for="limit">Feed 最多展示条数</label><input id="limit" type="number" min="10" max="500" name="rss_limit" value="{{ source.rss_limit }}"><p class="field-help">展示条数不代表历史抓取数量。</p></div>
       <button class="button" type="submit">保存设置</button>
     </form>
     <div class="danger-zone">

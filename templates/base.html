@@ -34,7 +34,7 @@
         <span>设置</span>
       </a>
     </nav>
-    <a class="account-chip {{ 'online' if credential_status.configured else 'offline' }}" href="/settings#login">
+    <a class="account-chip {{ 'online' if credential_status.configured and not experience.account_issue else 'offline' }}" href="/settings#login">
       <span class="status-dot" aria-hidden="true"></span>
       <span>{{ credential_status.name or ('微信读书已连接' if credential_status.configured else '未登录') }}</span>
     </a>
@@ -42,6 +42,11 @@
 </header>
 
 <main id="main-content" class="shell page-content" tabindex="-1">
+  <section class="health-alerts" data-health-alerts data-alert-keys="{{ experience.alerts|map(attribute='key')|join(',') }}" aria-label="需要处理的订阅" aria-live="polite" {% if not experience.alerts %}hidden{% endif %}>
+    {% for alert in experience.alerts %}
+    <div class="health-alert"><div><strong>{{ alert.title }}</strong><p>{{ alert.message }}</p></div><a class="button" href="{{ alert.href }}">{{ alert.action }}</a></div>
+    {% endfor %}
+  </section>
   {% if message %}<div class="flash success" role="status"><span aria-hidden="true">✓</span><div>{{ message }}</div><button type="button" data-dismiss aria-label="关闭提示">×</button></div>{% endif %}
   {% if error %}<div class="flash error" role="alert"><span aria-hidden="true">!</span><div>{{ error }}</div><button type="button" data-dismiss aria-label="关闭提示">×</button></div>{% endif %}
   {% block content %}{% endblock %}

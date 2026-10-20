@@ -10,6 +10,7 @@ services:
       WEREAD_DEVICE_ID: ${WEREAD_DEVICE_ID:-}
       WEREAD_PROFILE: ${WEREAD_PROFILE:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       WECHAT_MP_DATA: /app/data
       WECHAT_MP_DB: /app/data/wechat_mp.db
       WECHAT_MP_CREDENTIALS: /app/data/credentials.json
@@ -22,7 +23,7 @@ services:
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8080}:8080"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=5)"]
+      test: ["CMD", "python", "scripts/healthcheck.py"]
       interval: 30s
       timeout: 8s
       retries: 3

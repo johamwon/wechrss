@@ -8,7 +8,7 @@
     <a href="https://github.com/johamwon/wechrss/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johamwon/wechrss/ci.yml?branch=main&style=flat-square&label=build" alt="Build status"></a>
     <a href="https://github.com/johamwon/wechrss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/johamwon/wechrss?style=flat-square" alt="MIT license"></a>
     <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
-    <img src="https://img.shields.io/badge/version-4.1.0-16845b?style=flat-square" alt="Version 4.1.0">
+    <img src="https://img.shields.io/badge/version-4.2.0-16845b?style=flat-square" alt="Version 4.2.0">
     <a href="https://github.com/johamwon/wechrss/stargazers"><img src="https://img.shields.io/github/stars/johamwon/wechrss?style=flat-square&logo=github&label=stars" alt="GitHub stars"></a>
   </p>
 
@@ -41,6 +41,8 @@ WeRSS 是一个简洁的微信公众号 RSS 助手。粘贴任意一篇公众号
 | 🚀 | **小白友好** | Windows 双击启动，macOS / Linux 一条命令，也支持 Docker |
 | 🛡️ | **默认安全** | 仅监听本机，支持 Basic Auth、CSRF 与安全响应头 |
 | 🪶 | **克制抓取** | 只整理标题、时间、封面、摘要和原文链接，不抓取文章正文 |
+| 🧩 | **首次订阅向导** | 自动保留进度，从扫码到阅读器里看到第一篇文章 |
+| 🔎 | **地址与健康诊断** | 区分阅读位置，提示登录失效、同步异常和恢复方式 |
 
 <a id="quick-start"></a>
 
@@ -68,9 +70,24 @@ bash start.sh
 
 打开 <http://127.0.0.1:8080> 后，只需三步：
 
-1. 在「设置」中使用微信扫码登录；
-2. 点击「添加」，粘贴任意一篇公众号文章链接；
-3. 同步完成后，复制 Feed 地址到你的 RSS 阅读器。
+1. 点击「开始首次订阅」，按向导使用微信扫码连接；
+2. 粘贴任意一篇公众号文章链接，系统自动排入首次同步；
+3. 选择本机、手机或云端阅读器，按地址诊断提示配置；
+4. 将 Feed 加入阅读器，看到文章后点击「我已在阅读器看到文章」。
+
+向导进度会保留，同步在后台串行完成。Feed 展示条数不等于历史抓取数量，首次读取最近文章。
+
+### 阅读器访问与失效提醒
+
+- **这台电脑**：本机阅读器可以使用 `http://127.0.0.1:8080`，电脑和服务需要保持运行。
+- **手机 / 同一局域网**：使用服务的局域网 IP，并正确配置监听地址、端口和管理密码。
+- **云端阅读器**：需要可从互联网访问的服务地址，推荐 HTTPS 反向代理；本机和内网地址不可直接使用。
+
+在「设置 → Feed 地址」保存对外服务地址，或配置 `PUBLIC_BASE_URL`。这里只生成正确地址，不自动配置网络、DNS 或 HTTPS；请在目标阅读器中实际验证。
+
+启用管理密码后，可在订阅详情生成「阅读器专用链接」。令牌只允许读取该公众号的 Feed，不提供管理权限。更换令牌会立即撤销旧专用链接；不要公开分享链接，并配置反向代理隐藏查询字符串日志。
+
+页面会持续提示登录过期、人工验证、同步错误和较长时间未成功。上次尝试、上次成功和最近新文章分别记录；无新增文章不等于同步失败。登录过期或风控时停止后台自动请求，重新扫码或处理官方验证后手动检查。提醒显示在 Web 页面内，不包含邮件或系统通知。
 
 <details>
 <summary><strong>使用 Docker Compose</strong></summary>
@@ -156,6 +173,7 @@ ADMIN_PASSWORD=换成足够强的密码
 | `ADMIN_PASSWORD` | 空 | Web Basic Auth 密码；远程访问时必须设置 |
 | `BIND_ADDRESS` | `127.0.0.1` | Compose 暴露地址 |
 | `PORT` | `8080` | 服务端口 |
+| `PUBLIC_BASE_URL` | 空 | 阅读器可访问的服务根地址；Web 设置保存值优先 |
 | `WEREAD_MIN_INTERVAL` | `2` | 微信读书请求最小间隔（秒） |
 | `HTTP_TIMEOUT` | `20` | HTTP 请求超时（秒） |
 | `WEREAD_QR_DEADLINE_SECONDS` | `300` | 扫码登录有效时间（秒） |

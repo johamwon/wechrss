@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import os
 import sqlite3
 import threading
@@ -82,6 +83,11 @@ class Source:
     created_at: int
     updated_at: int
     article_count: int = 0
+    last_success_at: int = 0
+    last_new_at: int = 0
+    feed_verified_at: int = 0
+    last_feed_request_at: int = 0
+    feed_token: str = ""
 
 
 @dataclass
@@ -238,9 +244,31 @@ class AppDB:
         self.path = path
         with self.connect() as conn:
             conn.executescript(APP_SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(sources)")}
+            for name, declaration in {
+                "last_success_at": "INTEGER NOT NULL DEFAULT 0",
+                "last_new_at": "INTEGER NOT NULL DEFAULT 0",
+                "feed_verified_at": "INTEGER NOT NULL DEFAULT 0",
+                "last_feed_request_at": "INTEGER NOT NULL DEFAULT 0",
+                "feed_token": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE sources ADD COLUMN {name} {declaration}")
+            # Recover successful history without interpreting a failed attempt as success.
+            conn.execute("""UPDATE sources SET last_success_at=COALESCE(
+                (SELECT MAX(finished_at) FROM sync_runs WHERE source_id=sources.id AND status='ok'),
+                CASE WHEN last_status='ok' THEN last_sync_at ELSE 0 END)
+                WHERE last_success_at=0""")
+            conn.execute("""UPDATE sources SET last_new_at=COALESCE(
+                (SELECT MAX(finished_at) FROM sync_runs WHERE source_id=sources.id AND status='ok' AND new_count>0), 0)
+                WHERE last_new_at=0""")
             # v4.1 removes public-article body fetching from the Web product.
             # Keep the legacy column for database compatibility, but force it off.
             conn.execute("UPDATE sources SET fetch_content=0 WHERE fetch_content<>0")
+            if not conn.execute("SELECT 1 FROM app_settings WHERE key='account_issue'").fetchone():
+                latest = conn.execute("SELECT status FROM sync_runs ORDER BY started_at DESC,id DESC LIMIT 1").fetchone()
+                if latest and latest[0] in {"auth_expired", "risk_control"}:
+                    conn.execute("INSERT INTO app_settings(key,value) VALUES('account_issue',?)", (latest[0],))
             conn.commit()
 
     def connect(self) -> sqlite3.Connection:
@@ -258,6 +286,9 @@ class AppDB:
             last_sync_at=row["last_sync_at"], next_sync_at=row["next_sync_at"], last_status=row["last_status"],
             last_error=row["last_error"], created_at=row["created_at"], updated_at=row["updated_at"],
             article_count=row["article_count"] if "article_count" in row.keys() else 0,
+            last_success_at=row["last_success_at"], last_new_at=row["last_new_at"],
+            feed_verified_at=row["feed_verified_at"], last_feed_request_at=row["last_feed_request_at"],
+            feed_token=row["feed_token"],
         )
 
 
@@ -269,6 +300,28 @@ class AppDB:
     def set_setting(self, key: str, value: str) -> None:
         with self.connect() as conn:
             conn.execute("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+            conn.commit()
+
+    def rotate_feed_token(self, source_id: int) -> str:
+        token = secrets.token_urlsafe(32)
+        with self.connect() as conn:
+            conn.execute("UPDATE sources SET feed_token=?,feed_verified_at=0,last_feed_request_at=0 WHERE id=?", (token, source_id))
+            conn.commit()
+        return token
+
+    def record_feed_request(self, source_id: int) -> None:
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute("UPDATE sources SET last_feed_request_at=? WHERE id=? AND last_feed_request_at<?",
+                         (now, source_id, now - 60))
+            conn.commit()
+
+    def verify_feed(self, source_id: int) -> None:
+        source = self.get_source(source_id)
+        if not source or not source.last_success_at or not source.article_count or source.last_status != "ok":
+            raise FetcherError("请先成功同步文章，再确认阅读器中已显示内容")
+        with self.connect() as conn:
+            conn.execute("UPDATE sources SET feed_verified_at=? WHERE id=?", (int(time.time()), source_id))
             conn.commit()
 
     def list_sources(self) -> list[Source]:
@@ -387,8 +440,11 @@ class AppDB:
                 (now, result.status, result.received, result.new_count, result.content_blocked, result.message[:2000], run_id),
             )
             conn.execute(
-                """UPDATE sources SET last_sync_at=?,next_sync_at=?,last_status=?,last_error=?,updated_at=? WHERE id=?""",
-                (now, next_at, result.status, result.message[:2000] if result.status != "ok" else "", now, source.id),
+                """UPDATE sources SET last_sync_at=?,next_sync_at=?,last_status=?,last_error=?,updated_at=?,
+                   last_success_at=CASE WHEN ?='ok' THEN ? ELSE last_success_at END,
+                   last_new_at=CASE WHEN ?='ok' AND ?>0 THEN ? ELSE last_new_at END WHERE id=?""",
+                (now, next_at, result.status, result.message[:2000] if result.status != "ok" else "", now,
+                 result.status, now, result.status, result.new_count, now, source.id),
             )
             conn.commit()
 
@@ -397,12 +453,12 @@ class AppDB:
             if source_id is None:
                 rows = conn.execute(
                     """SELECT r.*, s.name, s.book_id FROM sync_runs r JOIN sources s ON s.id=r.source_id
-                       ORDER BY r.started_at DESC LIMIT ?""", (limit,)
+                       ORDER BY r.started_at DESC,r.id DESC LIMIT ?""", (limit,)
                 ).fetchall()
             else:
                 rows = conn.execute(
                     """SELECT r.*, s.name, s.book_id FROM sync_runs r JOIN sources s ON s.id=r.source_id
-                       WHERE r.source_id=? ORDER BY r.started_at DESC LIMIT ?""", (source_id, limit)
+                       WHERE r.source_id=? ORDER BY r.started_at DESC,r.id DESC LIMIT ?""", (source_id, limit)
                 ).fetchall()
         return [dict(r) for r in rows]
 
@@ -457,6 +513,69 @@ class SyncService:
         self.auth_client = auth_client or WeReadAuthClient(timeout=timeout)
         self._lock = threading.Lock()
         self._refresh_lock = threading.Lock()
+        self._queue_lock = threading.Lock()
+        self._pending: list[int] = []
+        self._queued: set[int] = set()
+        self._worker: threading.Thread | None = None
+
+    def account_issue(self) -> str:
+        return self.db.get_setting("account_issue")
+
+    def clear_account_issue(self) -> None:
+        self.db.set_setting("account_issue", "")
+
+    def save_credentials(self, record: WeReadCredentials) -> None:
+        self.credentials.save_record(record)
+        self.clear_account_issue()
+
+    def is_queued(self, source_id: int) -> bool:
+        with self._queue_lock:
+            return source_id in self._queued
+
+    def queue_sync(self, source_id: int) -> None:
+        if not self.credentials.status()["configured"]:
+            raise FetcherError("请先连接微信读书账号，再开始同步")
+        if not self.db.get_source(source_id):
+            raise FetcherError("公众号不存在")
+        with self._queue_lock:
+            if source_id in self._queued:
+                return
+            self._queued.add(source_id)
+            self._pending.append(source_id)
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._drain_queue, name="werss-sync", daemon=True)
+                self._worker.start()
+
+    def _drain_queue(self) -> None:
+        while True:
+            with self._queue_lock:
+                if not self._pending:
+                    self._worker = None
+                    return
+                source_id = self._pending.pop(0)
+            try:
+                # Explicit requests wait behind the one active task, never race it.
+                result = self.sync_source(source_id, wait=True)
+                if result.status in {"auth_expired", "risk_control"}:
+                    with self._queue_lock:
+                        for pending_id in self._pending:
+                            self._queued.discard(pending_id)
+                        self._pending.clear()
+            except FetcherError:
+                pass  # A source may be deleted while it is waiting.
+            except Exception:
+                # Keep the worker usable after an unexpected local/database error.
+                # Never log a response or credential as part of a background failure.
+                try:
+                    with self.db.connect() as conn:
+                        conn.execute("UPDATE sources SET last_status='error',last_error=? WHERE id=?",
+                                     ("后台同步未完成，请检查数据目录和服务日志后重试", source_id))
+                        conn.commit()
+                except Exception:
+                    pass
+            finally:
+                with self._queue_lock:
+                    self._queued.discard(source_id)
 
     def _client_for(self, record: WeReadCredentials) -> WeReadMobileClient:
         headers = self.auth_client.version_headers() if record.profile.startswith("eink") else None
@@ -483,8 +602,9 @@ class SyncService:
             try:
                 refreshed = self.auth_client.refresh(record)
             except WeReadAuthError as exc:
+                self.db.set_setting("account_issue", "auth_expired")
                 raise AuthExpiredError(str(exc)) from exc
-            self.credentials.save_record(refreshed)
+            self.save_credentials(refreshed)
             return refreshed
 
     def _get_articles_with_auto_refresh(self, source: Source) -> list[Article]:
@@ -495,18 +615,21 @@ class SyncService:
         except AuthExpiredError:
             # Exactly one refresh + one retry.  Risk-control errors are never used as a trigger
             # for credential rotation and are never automatically retried.
-            refreshed = self.refresh_credentials()
+            try:
+                refreshed = self.refresh_credentials()
+            except FetcherError as exc:
+                raise AuthExpiredError(str(exc)) from exc
             client = self._client_for(refreshed)
             return client.get_articles(source.book_id, count=20, synckey=0)
 
-    def sync_source(self, source_id: int) -> SyncResult:
+    def sync_source(self, source_id: int, *, wait: bool = False) -> SyncResult:
         source = self.db.get_source(source_id)
         if not source:
             raise FetcherError("公众号不存在")
-        if not self._lock.acquire(blocking=False):
+        if not self._lock.acquire(blocking=wait):
             raise FetcherError("已有同步任务正在运行，请稍后再试")
-        run_id = self.db.mark_sync_start(source.id)
         try:
+            run_id = self.db.mark_sync_start(source.id)
             try:
                 articles = self._get_articles_with_auto_refresh(source)
                 new_count = 0
@@ -525,18 +648,32 @@ class SyncService:
             except Exception as exc:
                 result = SyncResult(source.id, 0, 0, 0, "error", str(exc))
             self.db.mark_sync_finish(source, run_id, result)
+            if result.status in {"auth_expired", "risk_control"}:
+                self.db.set_setting("account_issue", result.status)
+            elif result.status == "ok":
+                self.clear_account_issue()
             return result
         finally:
             self._lock.release()
 
     def _resolve_url_with_auto_refresh(self, review_id: str) -> str:
-        record = self.credentials.get_record()
-        client = self._client_for(record)
         try:
-            return client.resolve_article_url(review_id)
+            record = self.credentials.get_record()
+            client = self._client_for(record)
+            try:
+                return client.resolve_article_url(review_id)
+            except AuthExpiredError:
+                try:
+                    refreshed = self.refresh_credentials()
+                except FetcherError as exc:
+                    raise AuthExpiredError(str(exc)) from exc
+                return self._client_for(refreshed).resolve_article_url(review_id)
+        except RiskControlError:
+            self.db.set_setting("account_issue", "risk_control")
+            raise
         except AuthExpiredError:
-            refreshed = self.refresh_credentials()
-            return self._client_for(refreshed).resolve_article_url(review_id)
+            self.db.set_setting("account_issue", "auth_expired")
+            raise
 
     def resolve_article_url(self, review_id: str) -> str:
         article = self.db.article_by_review(review_id)
@@ -603,12 +740,14 @@ class Scheduler:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            if self.enabled and self.service.credentials.status()["configured"]:
+            if self.enabled and self.service.credentials.status()["configured"] and not self.service.account_issue():
                 for source in self.db.due_sources():
-                    if self._stop.is_set():
+                    if self._stop.is_set() or self.service.account_issue():
                         break
+                    if self.service.is_queued(source.id):
+                        continue
                     try:
-                        self.service.sync_source(source.id)
+                        self.service.queue_sync(source.id)
                     except Exception:
                         # 单个任务不能让后台调度线程退出；具体同步错误由 SyncService 记录。
                         pass

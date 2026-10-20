@@ -33,7 +33,7 @@ def test_health_and_dashboard(tmp_path: Path, monkeypatch):
     meta, data = call_wsgi(app, "/api/health")
     assert meta["status"].startswith("200")
     assert b'"ok": true' in data
-    assert b'"version": "4.1.0"' in data
+    assert b'"version": "4.2.0"' in data
     assert meta["headers"]["X-Frame-Options"] == "DENY"
     meta, data = call_wsgi(app, "/")
     assert meta["status"].startswith("200")

@@ -1,0 +1,51 @@
+<section class="card feed-setup" id="feed-setup">
+  <div class="card-header"><div><h2>把文章带到阅读器</h2><p>选择阅读位置，检查地址，再到阅读器确认内容</p></div>
+    <span class="badge {{ 'ok' if source.feed_verified_at else 'never' }}">{{ '已手动确认' if source.feed_verified_at else '待验证' }}</span>
+  </div>
+  <div class="feed-setup-body">
+    <fieldset class="reader-choice"><legend>你准备在哪里阅读？</legend>
+      {% for key, label in [('local', '这台电脑'), ('lan', '手机 / 同一局域网'), ('cloud', '云端阅读器')] %}
+      <a class="button {{ 'selected' if diagnosis.target == key else '' }}" href="?reader={{ key }}#feed-setup" {% if diagnosis.target == key %}aria-current="true"{% endif %}>{{ label }}</a>
+      {% endfor %}
+    </fieldset>
+    <div class="diagnostic {{ 'warn' if diagnosis.blocked else '' }}" role="status">
+      <strong>{{ diagnosis.label }}</strong>
+      <ul>{% for note in diagnosis.notes %}<li>{{ note }}</li>{% endfor %}</ul>
+      <p>这是本地规则检查，不会从外网发起探测，也不代表目标阅读器已经连通。</p>
+    </div>
+    <label for="feed-url">RSS 订阅地址</label>
+    <div class="feed-copy-row">
+      <input id="feed-url" value="{{ feed_url }}" readonly aria-label="RSS 订阅地址">
+      <button class="button" type="button" data-copy-target="#feed-url">复制地址</button>
+      <a class="button" href="{{ feed_url }}" target="_blank" rel="noreferrer">预览 Feed ↗</a>
+    </div>
+    <p class="field-help">最近读取：{{ fmt_relative_ts(source.last_feed_request_at) }}。浏览器预览也会记录，不能据此判断订阅成功。</p>
+    <div class="form-actions left">
+      <a href="/settings?{% if onboarding is defined %}next=onboarding{% endif %}#feed-address">修改 Feed 对外地址</a>
+      {% if not source.feed_token %}
+      <form method="post" action="/sources/{{ source.id }}/feed-token">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ 'onboarding' if onboarding is defined else '' }}">
+        <button class="button" type="submit">生成阅读器专用链接</button>
+      </form>
+      {% endif %}
+    </div>
+    {% if source.feed_token %}
+    <details class="advanced"><summary>专用链接管理</summary><div class="advanced-content">
+      <p>更换后，使用旧专用链接的阅读器会停止更新。请在更换后复制新地址到阅读器。</p>
+      <p>未启用管理密码时，不带令牌的旧 Feed 地址也可访问。远程部署请同时设置管理密码。</p>
+      <form method="post" action="/sources/{{ source.id }}/feed-token" data-confirm="更换后旧的阅读器专用链接会立即失效，确定更换吗？">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ 'onboarding' if onboarding is defined else '' }}">
+        <button class="button" type="submit">更换专用链接</button>
+      </form>
+    </div></details>
+    {% endif %}
+    <div class="reader-confirm">
+      <p>将地址粘贴到阅读器的“添加订阅”中，确认能看到这个公众号的文章。</p>
+      <form method="post" action="/sources/{{ source.id }}/verify">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ 'onboarding' if onboarding is defined else '' }}">
+        <button class="button primary" type="submit" {% if not source.article_count or health.code != 'ok' or diagnosis.blocked %}disabled{% endif %}>我已在阅读器看到文章</button>
+      </form>
+      {% if not source.article_count %}<p class="field-help">请先同步到至少一篇文章，再确认订阅效果。</p>{% endif %}
+    </div>
+  </div>
+</section>

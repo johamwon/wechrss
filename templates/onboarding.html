@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}首次订阅向导 · WeRSS{% endblock %}
+{% block content %}
+<section class="page-heading"><span class="eyebrow">从这里开始</span><h1>让第一篇文章出现在你的阅读器</h1><p>进度会自动保留，中途关闭页面也可以继续。</p></section>
+<ol class="onboarding-steps" aria-label="首次订阅进度">
+  {% for label in ['连接账号', '添加公众号', '首次同步', '阅读器验证'] %}
+  <li class="{{ 'done' if onboarding.step > loop.index else 'current' if onboarding.step == loop.index else '' }}" {% if onboarding.step == loop.index %}aria-current="step"{% endif %}>
+    <span>{{ '✓' if onboarding.step > loop.index else loop.index }}</span><strong>{{ label }}</strong><small>{{ '已完成' if onboarding.step > loop.index else '进行中' if onboarding.step == loop.index else '待完成' }}</small>
+  </li>{% endfor %}
+</ol>
+{% if onboarding.step == 1 %}
+<section class="card onboarding-body"><h2>连接你的微信读书账号</h2>
+  <p>使用手机微信扫码，确认后即可读取公众号文章列表。登录凭证保存在你的部署环境中。</p>
+  {% if experience.account_issue == 'risk_control' %}<p>请先在官方微信或微信读书中完成人工验证，等待后重新连接；自动同步已暂停。</p>{% endif %}
+  <a class="button primary" href="/settings?next=onboarding#login">{{ '重新扫码连接' if experience.configured else '连接微信读书' }} →</a>
+</section>
+{% elif onboarding.step == 2 %}
+<section class="card onboarding-body"><h2>从一个常读的公众号开始</h2><p>在微信中打开它的一篇文章，点击右上角“复制链接”，再粘贴到这里。</p>
+  <form method="post" action="/sources" data-loading-form data-loading-label="正在识别…">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="onboarding">
+    <div class="field-group"><label for="source">公众号文章链接</label><input id="source" name="source" required placeholder="https://mp.weixin.qq.com/s/..." autofocus autocomplete="off"></div>
+    <button class="button primary" type="submit">识别并开始首次同步</button>
+  </form>
+</section>
+{% elif onboarding.step == 3 %}
+<section class="card onboarding-body" {% if health.busy %}data-sync-watch="{{ source.id }}"{% endif %}>
+  <h2>{{ source.name or source.book_id }} · {{ health.title }}</h2><p role="status" aria-live="polite">{{ health.message }}</p>
+  {% if source.last_error %}<details><summary>错误详情</summary><p>{{ source.last_error }}</p></details>{% endif %}
+  {% if not health.busy %}<form method="post" action="/sources/{{ source.id }}/sync" data-loading-form data-loading-label="正在排队…"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="onboarding"><button class="button primary" type="submit">{{ '重新检查一次' if source.last_status != 'never' else '开始首次同步' }}</button></form>{% endif %}
+  <p class="field-help">首次读取最近文章；不代表获取完整历史，也不会抓取正文。</p>
+</section>
+{% elif onboarding.step == 4 %}
+<section class="setup-banner"><div><strong>已完成首次同步：{{ source.article_count }} 篇文章</strong><p>最后一步，在你常用的阅读器中添加并确认文章。</p></div></section>
+{% include "_feed_setup.html" %}
+{% if not source.article_count %}
+<section class="card onboarding-body"><h2>这次没有获取到文章</h2><p>连接请求已成功，但还没有可用于验证的内容。可以稍后同步，或添加另一个公众号。</p><a class="button" href="/sources/{{ source.id }}">查看订阅</a><a class="button" href="/sources/new">添加其他公众号</a></section>
+{% endif %}
+{% else %}
+<section class="card onboarding-body"><h2>第一份订阅，准备好了</h2><p>你已确认文章出现在阅读器中。服务持续运行时，会按设定频率同步；遇到失效，可回到这里查看处理提示。</p><a class="button primary" href="/">进入我的订阅</a><a class="button" href="/sources/new">再添加一个公众号</a></section>
+{% endif %}
+<p class="onboarding-return"><a href="/">返回订阅工作台</a></p>
+{% endblock %}

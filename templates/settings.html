@@ -10,21 +10,22 @@
 <div class="settings-layout">
   <aside class="settings-nav" aria-label="设置导航">
     <a href="#login" class="active"><span>账号连接</span><small>{{ '已登录' if credential_status.configured else '未登录' }}</small></a>
-    <a href="#scheduler"><span>自动同步</span><small>{{ '运行中' if scheduler_enabled else '已暂停' }}</small></a>
+    <a href="#scheduler"><span>自动同步</span><small>{{ experience.sync_label }}</small></a>
+    <a href="#feed-address"><span>Feed 地址</span></a>
     <a href="#security"><span>部署安全</span></a>
   </aside>
 
   <div class="settings-main">
-    <section class="card settings-section" id="login" data-login-panel>
+    <section class="card settings-section" id="login" data-login-panel data-login-poll="{{ '1' if login_poll else '0' }}" data-login-return="{{ login_return }}">
       <div class="card-header">
         <div><h2>微信读书账号</h2><p>用于读取你有权访问的公众号文章列表</p></div>
-        <span id="login-badge" class="badge {{ login_status.status }}">{{ status_label(login_status.status) }}</span>
+        <span id="login-badge" class="badge {{ login_status.status }}">{{ ('已保存会话' if credential_status.configured else '待连接') if login_status.status == 'idle' else status_label(login_status.status) }}</span>
       </div>
 
       <div class="account-summary">
         <span class="account-avatar" aria-hidden="true">{{ (credential_status.name or '微')[:1] }}</span>
         <div class="account-primary"><strong>{{ credential_status.name or ('微信读书账号' if credential_status.configured else '尚未连接账号') }}</strong><span>{{ ('VID ' ~ credential_status.vid) if credential_status.vid else '扫码登录后即可开始同步' }}</span></div>
-        <div class="account-state {{ 'ready' if credential_status.configured else 'pending' }}"><span class="status-dot"></span>{{ '连接正常' if credential_status.configured else '等待连接' }}</div>
+        <div class="account-state {{ 'ready' if credential_status.configured and not experience.account_issue else 'pending' }}"><span class="status-dot"></span>{{ '需要处理连接' if experience.account_issue else '已保存会话，待同步确认' if credential_status.configured else '等待连接' }}</div>
       </div>
 
       <div class="login-state" id="login-state">
@@ -42,16 +43,10 @@
       <div class="inline-alert warn"><strong>检测到旧版环境变量凭证</strong><p>扫码登录会写入本地文件，但重启后环境变量仍会优先生效。登录成功后建议移除旧变量。</p></div>
       {% endif %}
 
-      <div class="account-details">
-        <div><span>登录来源</span><strong>{{ credential_status.source or '—' }}</strong></div>
-        <div><span>自动续期</span><strong>{{ '可用' if credential_status.refreshable else '不可用' }}</strong></div>
-        <div><span>会话类型</span><strong>{{ credential_status.profile or '—' }}</strong></div>
-        <div><span>最后更新</span><strong title="{{ fmt_ts(credential_status.updated_at) }}">{{ fmt_relative_ts(credential_status.updated_at) }}</strong></div>
-      </div>
-
       <div class="form-actions left">
         <form method="post" action="/settings/login/start" data-loading-form data-loading-label="正在生成…">
           <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="next" value="{{ 'onboarding' if next_onboarding else '' }}">
           <button class="button primary" id="login-start" type="submit">{{ '重新扫码登录' if credential_status.configured else '微信扫码登录' }}</button>
         </form>
         {% if login_status.status in ['requesting', 'waiting', 'scanned', 'exchanging', 'initializing'] %}
@@ -63,8 +58,14 @@
       </div>
 
       <details class="advanced">
-        <summary>高级选项</summary>
+        <summary>连接诊断与高级选项</summary>
         <div class="advanced-content">
+          <div class="account-details">
+            <div><span>登录来源</span><strong>{{ credential_status.source if credential_status.configured else '未连接' }}</strong></div>
+            <div><span>自动续期</span><strong>{{ '可用' if credential_status.refreshable else '重新扫码可尝试启用' }}</strong></div>
+            <div><span>会话类型</span><strong>{{ credential_status.profile if credential_status.configured else '—' }}</strong></div>
+            <div><span>凭证更新</span><strong>{{ fmt_relative_ts(credential_status.updated_at) }}</strong></div>
+          </div>
           <h3>手工导入旧版凭证</h3>
           <p>仅建议用于迁移。只填写 AccessToken 和 VID 无法自动续期。</p>
           <form method="post" action="/settings/credentials" class="inline-fields">
@@ -82,11 +83,21 @@
     </section>
 
     <section class="card settings-section" id="scheduler">
-      <div class="card-header"><div><h2>自动同步</h2><p>按每个订阅设置的频率在后台获取新文章</p></div><span class="badge {{ 'ok' if scheduler_enabled else 'paused' }}">{{ '运行中' if scheduler_enabled else '已暂停' }}</span></div>
+      <div class="card-header"><div><h2>自动同步</h2><p>按每个订阅设置的频率在后台获取新文章</p></div><span class="badge {{ 'ok' if scheduler_enabled and experience.configured and not experience.account_issue else 'paused' }}">{{ experience.sync_label }}</span></div>
       <div class="setting-row">
         <div><strong>后台调度器</strong><p>暂停后仍可在公众号详情页手动同步。最短间隔为 1 小时。</p></div>
         <form method="post" action="/settings/scheduler"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="{{ '0' if scheduler_enabled else '1' }}"><button class="button {{ 'danger' if scheduler_enabled else 'primary' }}" type="submit">{{ '暂停自动同步' if scheduler_enabled else '恢复自动同步' }}</button></form>
       </div>
+    </section>
+
+    <section class="card settings-section" id="feed-address">
+      <div class="card-header"><div><h2>Feed 对外地址</h2><p>填写阅读器实际能够访问的服务地址</p></div></div>
+      <form class="feed-address-form" method="post" action="/settings/feed-address">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ 'onboarding' if next_onboarding else '' }}">
+        <div class="field-group"><label for="public-base-url">服务地址（选填）</label><input id="public-base-url" name="public_base_url" type="url" value="{{ public_base_url }}" placeholder="https://rss.example.com" aria-describedby="address-help">
+          <p class="field-help" id="address-help">留空使用 PUBLIC_BASE_URL 环境变量（如有），否则使用当前访问地址。只填域名或 IP 和端口，不包含路径、密码或 /feeds。保存地址不会自动开放端口或配置 HTTPS。</p></div>
+        <button class="button" type="submit">保存{{ '并返回向导' if next_onboarding else '' }}</button>
+      </form>
     </section>
 
     <section class="card settings-section" id="security">

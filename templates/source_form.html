@@ -11,18 +11,21 @@
 <div class="form-layout">
   <form class="card form-card" method="post" action="/sources" data-loading-form data-loading-label="正在识别…">
     <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if next_onboarding %}<input type="hidden" name="next" value="onboarding">{% endif %}
     <div class="field-group">
       <label for="source">公众号文章链接 <span class="required">必填</span></label>
       <div class="input-leading">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 12 12 8M6.2 14.8l-1 1a3 3 0 0 1-4.2-4.2l3-3a3 3 0 0 1 4.2 0M13.8 5.2l1-1A3 3 0 0 1 19 8.4l-3 3a3 3 0 0 1-4.2 0"/></svg>
-        <input id="source" name="source" required autofocus autocomplete="off" placeholder="https://mp.weixin.qq.com/s/..." aria-describedby="source-help">
+        <input id="source" name="source" required autofocus autocomplete="off" value="{{ source_value or '' }}" placeholder="https://mp.weixin.qq.com/s/..." aria-describedby="source-help">
       </div>
-      <p class="field-help" id="source-help">也支持直接填写 <code>MP_WXS_*</code> 或数字 BID。</p>
+      <p class="field-help" id="source-help">添加后会自动安排首次同步。{% if not experience.configured %}<a href="/settings?next=onboarding#login">请先连接账号</a>，连接后才能获取文章。{% endif %}</p>
     </div>
 
+    <details class="advanced" {% if source_name %}open{% endif %}><summary>更多设置（可选）</summary><div class="advanced-content">
+    <p class="field-help">默认每 6 小时同步，Feed 最多展示 50 篇。也支持在链接栏填写 MP_WXS_* 或数字 BID。</p>
     <div class="field-group">
       <label for="name">显示名称 <span class="optional">选填</span></label>
-      <input id="name" name="name" maxlength="120" autocomplete="off" placeholder="留空时会尽量自动识别">
+      <input id="name" name="name" maxlength="120" value="{{ source_name or '' }}" autocomplete="off" placeholder="留空时会尽量自动识别">
     </div>
 
     <div class="field-row">
@@ -37,7 +40,7 @@
         </select>
       </div>
       <div class="field-group">
-        <label for="rss-limit">Feed 保留文章</label>
+        <label for="rss-limit">Feed 最多展示条数</label>
         <select id="rss-limit" name="rss_limit">
           <option value="20">最近 20 篇</option>
           <option value="50" selected>最近 50 篇</option>
@@ -46,6 +49,8 @@
         </select>
       </div>
     </div>
+    <p class="field-help">展示条数不代表历史抓取数量；首次读取最近文章，后续会持续积累。</p>
+    </div></details>
 
     <div class="form-actions">
       <a class="button" href="/">取消</a>

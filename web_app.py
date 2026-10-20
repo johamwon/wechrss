@@ -19,6 +19,7 @@ from wsgiref.simple_server import make_server, WSGIRequestHandler, WSGIServer
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from experience import diagnose_feed, normalize_public_url, source_health
 from service import AppDB, CredentialStore, Scheduler, SyncService
 from weread_auth import LoginManager, WeReadAuthClient
 from wechat_mp_fetcher import FetcherError
@@ -32,6 +33,7 @@ APP_VERSION = (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
 STATUS_LABELS = {
     "never": "待同步",
     "running": "同步中",
+    "queued": "已排队",
     "ok": "正常",
     "paused": "已暂停",
     "risk_control": "需要验证",
@@ -95,7 +97,9 @@ class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
 class QuietHandler(WSGIRequestHandler):
     def log_message(self, format: str, *args) -> None:
         if os.getenv("WECHAT_MP_QUIET", "") != "1":
-            super().log_message(format, *args)
+            safe_args = tuple(re.sub(r"([?&]token=)[^&\s\"]+", r"\1[redacted]", arg)
+                              if isinstance(arg, str) else arg for arg in args)
+            super().log_message(format, *safe_args)
 
 
 class WebApp:
@@ -107,8 +111,9 @@ class WebApp:
         self.credentials = credentials
         self.service = service
         self.scheduler = scheduler
-        self.login_manager = login_manager or LoginManager(service.auth_client, credentials.save_record)
+        self.login_manager = login_manager or LoginManager(service.auth_client, service.save_credentials)
         self.admin_password = os.getenv("ADMIN_PASSWORD", "")
+        self.public_base_url = normalize_public_url(os.getenv("PUBLIC_BASE_URL", ""))
         self.csrf_token = os.getenv("WECHAT_MP_CSRF_TOKEN", "") or secrets.token_urlsafe(32)
         self.env = Environment(
             loader=FileSystemLoader(str(BASE_DIR / "templates")),
@@ -123,6 +128,11 @@ class WebApp:
         )
 
     def _authorized(self, environ) -> bool:
+        match = re.fullmatch(r"/feeds/(\d+)\.xml", environ.get("PATH_INFO", ""))
+        token = self._query(environ).get("token", "")
+        if match and token and environ.get("REQUEST_METHOD", "GET") in {"GET", "HEAD"}:
+            source = self.db.get_source(int(match.group(1)))
+            return bool(source and source.feed_token and hmac.compare_digest(token.encode(), source.feed_token.encode()))
         if not self.admin_password:
             return True
         header = environ.get("HTTP_AUTHORIZATION", "")
@@ -133,7 +143,7 @@ class WebApp:
             username, password = raw.split(":", 1)
         except Exception:
             return False
-        return hmac.compare_digest(username, "admin") and hmac.compare_digest(password, self.admin_password)
+        return hmac.compare_digest(username.encode(), b"admin") and hmac.compare_digest(password.encode(), self.admin_password.encode())
 
     def _base_url(self, environ) -> str:
         scheme = (environ.get("HTTP_X_FORWARDED_PROTO") or environ.get("wsgi.url_scheme", "http")).split(",", 1)[0].strip()
@@ -142,7 +152,75 @@ class WebApp:
         host = (environ.get("HTTP_X_FORWARDED_HOST") or environ.get("HTTP_HOST") or "127.0.0.1").split(",", 1)[0].strip()
         if not re.fullmatch(r"[A-Za-z0-9.\-:\[\]]+", host):
             host = "127.0.0.1"
-        return f"{scheme}://{host}"
+        try:
+            return normalize_public_url(f"{scheme}://{host}")
+        except FetcherError:
+            return "http://127.0.0.1"
+
+    def _feed_base_url(self, environ) -> str:
+        return self.db.get_setting("public_base_url") or self.public_base_url or self._base_url(environ)
+
+    def _feed_url(self, source, environ) -> str:
+        url = self._feed_base_url(environ) + f"/feeds/{source.id}.xml"
+        return url + ("?token=" + quote(source.feed_token, safe="") if source.feed_token else "")
+
+    def _experience(self) -> dict:
+        configured = self.credentials.status()["configured"]
+        issue = self.service.account_issue()
+        sources = self.db.list_sources()
+        items = []
+        for source in sources:
+            health = source_health(source, configured=configured, scheduler_enabled=self.scheduler.enabled,
+                                   account_issue=issue, queued=self.service.is_queued(source.id))
+            items.append({"id": source.id, "name": source.name or source.book_id,
+                          "status": source.last_status, "last_success_at": source.last_success_at,
+                          "last_new_at": source.last_new_at, "article_count": source.article_count,
+                          "health": health})
+        alerts = []
+        if configured and issue in {"auth_expired", "risk_control"}:
+            text = ("登录已过期，请重新扫码；自动同步已暂停。" if issue == "auth_expired" else
+                    "平台要求人工验证，自动同步已暂停。请在官方应用完成验证，等待后手动检查。")
+            alerts.append({"key": issue, "title": "账号连接需要处理", "message": text,
+                           "href": "/settings?next=onboarding#login", "action": "处理账号连接"})
+        for item in items:
+            health = item["health"]
+            if health["code"] in {"error", "stale", "retry"}:
+                alerts.append({"key": f'{item["id"]}:{health["code"]}',
+                               "title": item["name"] + "：" + health["title"],
+                               "message": health["message"], "href": health["href"], "action": health["action"]})
+        connection_label = ("等待账号连接" if not configured else
+                            "需要人工验证" if issue == "risk_control" else
+                            "需要重新扫码" if issue == "auth_expired" else
+                            "已暂停" if not self.scheduler.enabled else "已开启")
+        return {"configured": configured, "account_issue": issue, "sync_label": connection_label,
+                "sources": items, "alerts": alerts[:8],
+                "onboarding_complete": any(source.feed_verified_at for source in sources)}
+
+    def _onboarding(self) -> dict:
+        sources = self.db.list_sources()
+        selected = self.db.get_setting("onboarding_source_id")
+        source = next((s for s in sources if str(s.id) == selected), sources[0] if sources else None)
+        if not self.credentials.status()["configured"] or self.service.account_issue() in {"auth_expired", "risk_control"}:
+            step = 1
+        elif source is None:
+            step = 2
+        elif not source.last_success_at or (not source.feed_verified_at and (
+                source.last_status != "ok" or self.service.is_queued(source.id))):
+            step = 3
+        elif not source.feed_verified_at:
+            step = 4
+        else:
+            step = 5
+        return {"step": step, "source": source}
+
+    def _feed_context(self, source, environ, target="local") -> dict:
+        return {"source": source, "feed_url": self._feed_url(source, environ),
+                "diagnosis": diagnose_feed(self._feed_base_url(environ), target,
+                                           password_required=bool(self.admin_password),
+                                           token_available=bool(source.feed_token)),
+                "health": source_health(source, configured=self.credentials.status()["configured"],
+                                        scheduler_enabled=self.scheduler.enabled,
+                                        account_issue=self.service.account_issue(), queued=self.service.is_queued(source.id))}
 
     def _safe_return_path(self, environ) -> str:
         referer = environ.get("HTTP_REFERER", "")
@@ -171,6 +249,8 @@ class WebApp:
     def _render(self, start_response, template: str, *, status="200 OK", **ctx):
         ctx.setdefault("csrf", self.csrf_token)
         ctx.setdefault("credential_status", self.credentials.status())
+        ctx.setdefault("experience", self._experience())
+        ctx.setdefault("source_health_by_id", {item["id"]: item["health"] for item in ctx["experience"]["sources"]})
         ctx.setdefault("scheduler_enabled", self.scheduler.enabled)
         ctx.setdefault("active_page", {
             "dashboard.html": "dashboard",
@@ -178,6 +258,7 @@ class WebApp:
             "source_detail.html": "dashboard",
             "article.html": "dashboard",
             "settings.html": "settings",
+            "onboarding.html": "dashboard",
         }.get(template, ""))
         body = self.env.get_template(template).render(**ctx).encode("utf-8")
         start_response(status, [
@@ -205,7 +286,7 @@ class WebApp:
         return [body]
 
     def _require_csrf(self, form: dict[str, str]):
-        if not hmac.compare_digest(form.get("csrf", ""), self.csrf_token):
+        if not hmac.compare_digest(form.get("csrf", "").encode(), self.csrf_token.encode()):
             raise FetcherError("CSRF 校验失败，请刷新页面后重试")
 
     def __call__(self, environ, start_response):
@@ -239,6 +320,8 @@ class WebApp:
                 asset = BASE_DIR / "static" / path.rsplit("/", 1)[-1]
                 data = asset.read_bytes()
                 content_type = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
+                if asset.suffix == ".js":
+                    content_type = "text/javascript"
                 if asset.suffix in {".css", ".js", ".svg"}:
                     content_type += "; charset=utf-8"
                 start_response("200 OK", [
@@ -249,23 +332,44 @@ class WebApp:
                 return [data]
 
             if path == "/" and method == "GET":
+                sources = self.db.list_sources()
                 return self._render(
                     start_response, "dashboard.html",
-                    sources=self.db.list_sources(), runs=self.db.recent_runs(limit=12),
+                    sources=sources, runs=self.db.recent_runs(limit=12),
+                    feed_urls={s.id: self._feed_url(s, environ) for s in sources},
                     message=query.get("message", ""), error=query.get("error", ""), base_url=self._base_url(environ),
                 )
 
+            if path == "/onboarding" and method == "GET":
+                onboarding = self._onboarding()
+                source = onboarding["source"]
+                ctx = self._feed_context(source, environ, query.get("reader", "local")) if source else {}
+                return self._render(start_response, "onboarding.html", onboarding=onboarding,
+                                    message=query.get("message", ""), error=query.get("error", ""), **ctx)
+
             if path == "/sources/new" and method == "GET":
-                return self._render(start_response, "source_form.html", error=query.get("error", ""))
+                return self._render(start_response, "source_form.html", error=query.get("error", ""),
+                                    source_value=query.get("source", ""), source_name=query.get("name", ""))
 
             if path == "/sources" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
-                src = self.db.add_source(
-                    source_value=form.get("source", ""), name=form.get("name", ""),
-                    interval_minutes=int(form.get("interval_minutes") or 360),
-                    fetch_content=False, rss_limit=int(form.get("rss_limit") or 50),
-                )
-                return self._redirect(start_response, f"/sources/{src.id}?message={quote('公众号已添加')}")
+                try:
+                    src = self.db.add_source(
+                        source_value=form.get("source", ""), name=form.get("name", ""),
+                        interval_minutes=int(form.get("interval_minutes") or 360),
+                        fetch_content=False, rss_limit=int(form.get("rss_limit") or 50),
+                    )
+                except (FetcherError, ValueError) as exc:
+                    return self._render(start_response, "source_form.html", status="400 Bad Request", error=str(exc),
+                                        source_value=form.get("source", ""), source_name=form.get("name", ""),
+                                        next_onboarding=form.get("next") == "onboarding")
+                self.db.set_setting("onboarding_source_id", str(src.id))
+                message = "公众号已添加，请先连接账号后开始同步"
+                if self.credentials.status()["configured"] and not self.service.account_issue():
+                    self.service.queue_sync(src.id)
+                    message = "公众号已添加，正在安排首次同步"
+                target = "/onboarding" if form.get("next") == "onboarding" else f"/sources/{src.id}"
+                return self._redirect(start_response, target + "?message=" + quote(message))
 
             m = re.fullmatch(r"/sources/(\d+)", path)
             if m and method == "GET":
@@ -274,9 +378,9 @@ class WebApp:
                     return self._render(start_response, "error.html", status="404 Not Found", error="没有找到这个公众号订阅，它可能已经被删除。")
                 articles = self.db.get_articles(source.book_id, limit=source.rss_limit)
                 return self._render(
-                    start_response, "source_detail.html", source=source, articles=articles,
+                    start_response, "source_detail.html", articles=articles,
                     runs=self.db.recent_runs(source_id, 20), message=query.get("message", ""), error=query.get("error", ""),
-                    feed_url=self._base_url(environ) + f"/feeds/{source.id}.xml",
+                    **self._feed_context(source, environ, query.get("reader", "local")),
                 )
 
             m = re.fullmatch(r"/sources/(\d+)/edit", path)
@@ -293,11 +397,28 @@ class WebApp:
             if m and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
                 source_id = int(m.group(1))
-                result = self.service.sync_source(source_id)
-                if result.status == "ok":
-                    msg = f"同步完成：收到 {result.received}，新增 {result.new_count}"
-                    return self._redirect(start_response, f"/sources/{source_id}?message={quote(msg)}")
-                return self._redirect(start_response, f"/sources/{source_id}?error={quote(result.message or result.status)}")
+                self.service.queue_sync(source_id)
+                target = "/onboarding" if form.get("next") == "onboarding" else f"/sources/{source_id}"
+                return self._redirect(start_response, target)
+
+            m = re.fullmatch(r"/sources/(\d+)/(verify|feed-token)", path)
+            if m and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                source_id = int(m.group(1))
+                if not self.db.get_source(source_id):
+                    raise FetcherError("公众号不存在")
+                if m.group(2) == "verify":
+                    if not self.credentials.status()["configured"] or self.service.is_queued(source_id) or self.service.account_issue():
+                        raise FetcherError("请等待同步成功后，再确认阅读器中的文章")
+                    self.db.verify_feed(source_id)
+                    message = "订阅验证完成！以后将按设定频率自动同步。"
+                else:
+                    had_token = bool(self.db.get_source(source_id).feed_token)
+                    self.db.rotate_feed_token(source_id)
+                    message = ("阅读器专用链接已更换；请更新阅读器中的旧地址。" if had_token else
+                               "阅读器专用链接已生成，请复制新地址到阅读器。")
+                target = "/onboarding" if form.get("next") == "onboarding" else f"/sources/{source_id}"
+                return self._redirect(start_response, target + "?message=" + quote(message))
 
             m = re.fullmatch(r"/sources/(\d+)/resolve-urls", path)
             if m and method == "POST":
@@ -340,23 +461,41 @@ class WebApp:
                 )
 
             m = re.fullmatch(r"/feeds/(\d+)\.xml", path)
-            if m and method == "GET":
-                payload = self.service.feed_bytes(int(m.group(1)), self._base_url(environ))
+            if m and method in {"GET", "HEAD"}:
+                source_id = int(m.group(1))
+                if not self.db.get_source(source_id):
+                    return self._text(start_response, "Feed not found", status="404 Not Found")
+                payload = self.service.feed_bytes(source_id, self._feed_base_url(environ))
+                if method == "GET":
+                    self.db.record_feed_request(source_id)
                 start_response("200 OK", [("Content-Type", "application/rss+xml; charset=utf-8"),
-                                          ("Content-Length", str(len(payload))), ("Cache-Control", "public, max-age=300")])
-                return [payload]
+                                          ("Content-Length", str(len(payload))), ("Cache-Control", "private, max-age=300")])
+                return [payload] if method == "GET" else []
 
             if path == "/settings" and method == "GET":
+                login_state = self.login_manager.status()
                 return self._render(
                     start_response, "settings.html",
                     message=query.get("message", ""), error=query.get("error", ""),
-                    login_status=self.login_manager.status(),
+                    login_status=login_state,
+                    login_poll=query.get("login") == "1" or login_state["status"] in {
+                        "requesting", "waiting", "scanned", "exchanging", "initializing"},
+                    login_return="/onboarding" if query.get("next") == "onboarding" else "/settings?message=" + quote("扫码登录成功"),
+                    next_onboarding=query.get("next") == "onboarding",
+                    public_base_url=self.db.get_setting("public_base_url") or self.public_base_url,
                 )
+
+            if path == "/settings/feed-address" and method == "POST":
+                form = self._form(environ); self._require_csrf(form)
+                self.db.set_setting("public_base_url", normalize_public_url(form.get("public_base_url", "")))
+                target = "/onboarding" if form.get("next") == "onboarding" else "/settings"
+                return self._redirect(start_response, target + "?message=" + quote("Feed 地址已保存，请在阅读器中验证"))
 
             if path == "/settings/login/start" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
                 self.login_manager.start()
-                return self._redirect(start_response, "/settings#login")
+                target = "/settings?login=1" + ("&next=onboarding" if form.get("next") == "onboarding" else "")
+                return self._redirect(start_response, target + "#login")
 
             if path == "/settings/login/cancel" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
@@ -372,11 +511,13 @@ class WebApp:
             if path == "/settings/credentials" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
                 self.credentials.save(form.get("access_token", ""), form.get("vid", ""))
+                self.service.clear_account_issue()
                 return self._redirect(start_response, "/settings?message=" + quote("本地凭证已保存"))
 
             if path == "/settings/credentials/clear" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
                 self.credentials.clear_file()
+                self.service.clear_account_issue()
                 return self._redirect(start_response, "/settings?message=" + quote("本地凭证文件已删除"))
 
             if path == "/settings/scheduler" and method == "POST":
@@ -388,12 +529,22 @@ class WebApp:
             if path == "/api/login/status" and method == "GET":
                 return self._json(start_response, self.login_manager.status())
 
+            if path == "/api/experience" and method == "GET":
+                return self._json(start_response, self._experience())
+
+            m = re.fullmatch(r"/api/sources/(\d+)/status", path)
+            if m and method == "GET":
+                item = next((item for item in self._experience()["sources"] if item["id"] == int(m.group(1))), None)
+                return self._json(start_response, item or {"error": "公众号不存在"},
+                                  status="200 OK" if item else "404 Not Found")
+
             if path == "/api/health" and method == "GET":
                 cs = self.credentials.status()
                 return self._json(start_response, {
                     "ok": True, "time": int(time.time()), "scheduler": self.scheduler.enabled,
                     "credentials": cs["configured"], "refreshable": cs["refreshable"],
                     "login": self.login_manager.status().get("status", "idle"), "version": APP_VERSION,
+                    "account_issue": self.service.account_issue(),
                 })
 
             if path == "/api/sources" and method == "GET":
@@ -401,6 +552,7 @@ class WebApp:
                 for source in self.db.list_sources():
                     item = dict(source.__dict__)
                     item.pop("fetch_content", None)
+                    item.pop("feed_token", None)
                     data.append(item)
                 return self._json(start_response, data)
 
@@ -430,7 +582,7 @@ def build_runtime():
     )
     scheduler = Scheduler(db, service, poll_seconds=int(os.getenv("SCHEDULER_POLL_SECONDS", "30")))
     login_manager = LoginManager(
-        auth_client, credentials.save_record,
+        auth_client, service.save_credentials,
         deadline_seconds=int(os.getenv("WEREAD_QR_DEADLINE_SECONDS", "300")),
     )
     app = WebApp(db, credentials, service, scheduler, login_manager)
