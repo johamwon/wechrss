@@ -1788,6 +1788,19 @@ input[readonly] {
   color: var(--faint);
 }
 
+.footer-contact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.footer-contact img {
+  width: 48px;
+  height: 48px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
 .toast {
   position: fixed;
   z-index: 50;
