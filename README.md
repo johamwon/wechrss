@@ -5,7 +5,7 @@
   <p>扫码登录 · 自动同步 · 独立 Feed · 一键启动 · 完全自托管</p>
 
   <p>
-    <a href="https://github.com/johamwon/wechrss/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johamwon/wechrss/ci.yml?branch=main&style=flat-square&label=build"></a>
+    <a href="https://github.com/johamwon/wechrss/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/johamwon/wechrss/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
     <a href="https://github.com/johamwon/wechrss/blob/main/LICENSE"><img src="https://img.shields.io/github/license/johamwon/wechrss?style=flat-square" alt="MIT license"></a>
     <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/version-4.2.0-16845b?style=flat-square" alt="Version 4.2.0">
@@ -21,17 +21,25 @@
   </p>
 </div>
 
+## 📈 Star 增长趋势
+
+<p align="center">
+  <a href="https://star-history.com/#johamwon/wechrss&Date">
+    <img src="https://api.star-history.com/svg?repos=johamwon/wechrss&type=Date" alt="WechRss Star 增长趋势" width="700">
+  </a>
+</p>
+
 ## 📬 联系作者
 
 对 WechRss 有建议、问题或定制需求，欢迎扫码添加作者微信：
 
 <p align="center"><img src="./static/qrcode.png" width="200" height="200" alt="作者微信二维码 · 扫码联系"></p>
 
-> 💡 不想本地部署？可在 [ModelScope 创空间](https://www.modelscope.cn/studios/johamwon/wechrss) 在线体验。演示实例为共享环境，数据不定期清理，请勿存放重要订阅。
+> 💡 不想本地部署？可在 [ModelScope 创空间](https://www.modelscope.cn/studios/johamwon/wechrss) 在线体验。演示实例为共享环境，数据不定期清理，请勿存放重要数据。
 
 ![WechRss 订阅管理界面](./docs/assets/dashboard.png)
 
-WechRss 是一个简洁的微信公众号 RSS 助手。粘贴任意一篇公众号文章链接，它会识别公众号、定时同步文章元数据，并为每个公众号生成独立 Feed。数据和凭证保存在本地，支持一键启动和完全自托管。
+WechRss 是一个简洁的微信公众号 RSS 助手。粘贴任意一篇公众号文章链接，它会识别公众号、定时同步文章元数据，并为每个公众号生成独立 Feed。数据保存在本地，部署简单，适合个人长期使用。
 
 > 如果 WechRss 对你有帮助，欢迎点一个 [Star](https://github.com/johamwon/wechrss) ⭐。这会让更多喜欢 RSS 的人发现它。
 
@@ -44,7 +52,7 @@ WechRss 是一个简洁的微信公众号 RSS 助手。粘贴任意一篇公众�
 | 🧭 | **链接即订阅** | 粘贴公众号文章链接，自动识别公众号，无需寻找复杂参数 |
 | 📡 | **独立 RSS Feed** | 每个公众号单独设置同步频率、Feed 条数与启停状态 |
 | 📱 | **扫码登录** | 在 Web 界面连接微信读书，可用时自动续期会话 |
-| ⏱️ | **自动同步** | 后台调度、同步记录与异常状态一目了然 |
+| ⏱️ | **自动同步** | 后台调度、同步记��与异常状态一目了然 |
 | 🗄️ | **本地持久化** | SQLite 单机存储，方便迁移与备份，不依赖外部数据库 |
 | 🚀 | **小白友好** | Windows 双击启动，macOS / Linux 一条命令，也支持 Docker |
 | 🛡️ | **默认安全** | 仅监听本机，支持 Basic Auth、CSRF 与安全响应头 |
@@ -93,9 +101,9 @@ bash start.sh
 
 在「设置 → Feed 地址」保存对外服务地址，或配置 `PUBLIC_BASE_URL`。这里只生成正确地址，不自动配置网络、DNS 或 HTTPS；请在目标阅读器中实际验证。
 
-启用管理密码后，可在订阅详情生成「阅读器专用链接」。令牌只允许读取该公众号的 Feed，不提供管理权限。更换令牌会立即撤销旧专用链接；不要公开分享链接，并配置反向代理隐藏查询字符串日志。
+启用管理密码后，可在订阅详情生成「阅读器专用链接」。令牌只允许读取该公众号的 Feed，不提供管理权限。更换令牌会立即撤销旧专用链接；不要把专用链接提交到公开位置。
 
-页面会持续提示登录过期、人工验证、同步错误和较长时间未成功。上次尝试、上次成功和最近新文章分别记录；无新增文章不等于同步失败。登录过期或风控时停止后台自动请求，重新扫码或处理官方验证后手动检查。提醒显示在 Web 页面内，不包含邮件或系统通知。
+页面会持续提示登录过期、人工验证、同步错误和较长时间未成功。上次尝试、上次成功和最近新文章分别记录；无新增文章不等于同步失败。登录失效或风控时，请按页面提示处理，不要连续重复请求。
 
 <details>
 <summary><strong>使用 Docker Compose</strong></summary>
@@ -149,7 +157,7 @@ WechRss 获取并保存文章的标题、发布时间、封面、摘要和微信
 ## 🔒 部署与使用边界
 
 > [!IMPORTANT]
-> 本项目依赖非公开且可能变化的微信读书移动端接口。请仅访问你有权访问的内容，并遵守相关平台条款。WechRss 不处理验证码、不绕过人工验证，也不[...]
+> 本项目依赖非公开且可能变化的微信读书移动端接口。请仅访问你有权访问的内容，并遵守相关平台条款。WechRss 不处理验证码、不绕过人工验证，也不保证接口长期可用。
 
 默认 Docker 端口仅绑定本机：
 
@@ -179,7 +187,7 @@ ADMIN_PASSWORD=换成足够强的密码
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
 | `ADMIN_PASSWORD` | 空 | Web Basic Auth 密码；远程访问时必须设置 |
-| `ALLOWED_FRAME_ANCESTORS` | 空 | 允许以 iframe 嵌入本站的源（空格分隔）；留空禁止嵌入。部署到 ModelScope 创空间等平台时设为平台域名 |
+| `ALLOWED_FRAME_ANCESTORS` | 空 | 允许以 iframe 嵌入本站的源（空格分隔）；空时禁止嵌入。部署到 ModelScope 创空间等平台时设为平台域名 |
 | `BIND_ADDRESS` | `127.0.0.1` | Compose 暴露地址 |
 | `PORT` | `8080` | 服务端口 |
 | `PUBLIC_BASE_URL` | 空 | 阅读器可访问的服务根地址；Web 设置保存值优先 |
