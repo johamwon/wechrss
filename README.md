@@ -141,6 +141,10 @@ Windows PowerShell 激活虚拟环境：
 
 </details>
 
+## ☁️ 一键部署
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/WechRSS/)
+
 ## 🧩 它如何工作
 
 ```mermaid
