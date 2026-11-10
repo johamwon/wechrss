@@ -81,6 +81,24 @@ CREATE TABLE IF NOT EXISTS webhooks (
     last_error TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_webhooks_event ON webhooks(event_type, enabled);
+CREATE TABLE IF NOT EXISTS feed_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    token TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feed_group_sources (
+    group_id INTEGER NOT NULL REFERENCES feed_groups(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    PRIMARY KEY(group_id, source_id)
+);
+CREATE TABLE IF NOT EXISTS inbox_articles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    url_key TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    tags TEXT NOT NULL,
+    note TEXT NOT NULL
+);
 """
 
 
@@ -601,11 +619,17 @@ class AppDB:
                 ).fetchall()
         return [Article(*tuple(r)[:10], content_html=tuple(r)[10], author=tuple(r)[11]) for r in rows]
 
-    def get_filter_rules(self, source_id: int) -> list[dict]:
-        rules_json = self.get_setting(f"filter_rules_{source_id}", "[]")
+    def get_filter_rules(self, source_id: int, *, conn: sqlite3.Connection | None = None) -> list[dict]:
+        key = f"filter_rules_{source_id}"
+        if conn is None:
+            rules_json = self.get_setting(key, "[]")
+        else:
+            row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+            rules_json = row[0] if row else "[]"
         try:
-            return json.loads(rules_json)
-        except Exception:
+            rules = json.loads(rules_json)
+            return [rule for rule in rules if isinstance(rule, dict)] if isinstance(rules, list) else []
+        except (ValueError, TypeError):
             return []
 
     def set_filter_rules(self, source_id: int, rules: list[dict]) -> None:

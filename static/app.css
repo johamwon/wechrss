@@ -71,6 +71,15 @@
 .feed-copy-row .button { flex-shrink: 0; }
 .reader-confirm { padding-top: 18px; margin-top: 20px; border-top: 1px solid var(--line); }
 .feed-address-form { padding: 22px; }
+.library-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.library-actions [aria-current="page"] { border-color: var(--green); color: var(--green-dark); }
+.library-section.form-card { margin-bottom: 20px; overflow-wrap: anywhere; }
+.library-members { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 9px; margin: 0 0 16px; padding: 12px; min-width: 0; }
+.library-members label { display: flex; align-items: start; gap: 8px; }
+.library-members input[type="checkbox"] { width: 18px; height: 18px; margin: 3px 0 0; flex-shrink: 0; accent-color: var(--green); }
+.library-section input:not([type="checkbox"]):not([type="hidden"]) { background: var(--panel-soft); }
+.library-section textarea { width: 100%; padding: 9px 11px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel-soft); color: var(--text); font: inherit; }
+.library-bookmark { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
 .feed-setup .advanced { margin-top: 18px; }
 .onboarding-body p, .diagnostic li, .health-alert p { overflow-wrap: anywhere; }
 @media (max-width: 680px) {

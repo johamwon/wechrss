@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}文章收件箱 · WeRSS{% endblock %}
+{% block content %}
+<nav class="breadcrumb" aria-label="面包屑"><a href="/">公众号订阅</a><span>/</span><span>文章收件箱</span></nav>
+<section class="page-heading"><h1>文章收件箱</h1><p>存一篇文章，或回头找一篇旧文。不需要订阅公众号，也不抓取正文。</p></section>
+<form class="card form-card library-section" id="bookmark" method="post" action="/inbox">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="field-group"><label for="bookmark-url">微信文章链接</label><input id="bookmark-url" name="url" type="url" maxlength="4096" required value="{{ fields.url }}" placeholder="https://mp.weixin.qq.com/s/…"></div>
+  <div class="field-group"><label for="bookmark-title">标题（选填）</label><input id="bookmark-title" name="title" maxlength="200" value="{{ fields.title }}"></div>
+  <div class="field-group"><label for="bookmark-tags">标签（选填）</label><input id="bookmark-tags" name="tags" maxlength="120" value="{{ fields.tags }}" placeholder="例如：工作、待读"></div>
+  <div class="field-group"><label for="bookmark-note">备注（选填）</label><textarea id="bookmark-note" name="note" maxlength="1000" rows="3">{{ fields.note }}</textarea></div>
+  <button class="button primary" type="submit">收藏链接</button>
+</form>
+<section class="card form-card library-section">
+  <h2>已收藏</h2>
+  <form class="feed-copy-row" method="get" action="/inbox">
+    <input name="q" type="search" aria-label="搜索收藏" maxlength="200" value="{{ keyword }}" placeholder="搜标题、标签、备注或链接">
+    <button class="button" type="submit">搜索</button>
+    {% if keyword %}<a class="button" href="/inbox">清除</a>{% endif %}
+  </form>
+  {% for item in bookmarks %}
+  <article class="library-bookmark">
+    <a href="{{ item.url }}" target="_blank" rel="noreferrer">{{ item.title or '打开微信原文' }} ↗</a>
+    {% if item.tags %}<p class="field-help">{{ item.tags }}</p>{% endif %}
+    {% if item.note %}<p>{{ item.note }}</p>{% endif %}
+    <form method="post" action="/inbox" data-confirm="确定移除这条收藏？">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="id" value="{{ item.id }}">
+      <button class="button" name="action" value="remove">移除收藏</button>
+    </form>
+  </article>
+  {% else %}<p>{{ '没有符合条件的收藏。' if keyword else '还没有收藏，可以从一条微信文章链接开始。' }}</p>{% endfor %}
+</section>
+{% endblock %}

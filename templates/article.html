@@ -16,6 +16,9 @@
       {% endif %}
     </div>
   </header>
+  {% if article.url %}
+  <p><a class="button" href="/inbox?url={{ article.url|urlencode }}&amp;title={{ article.title|urlencode }}#bookmark">收藏这篇</a></p>
+  {% endif %}
   <div class="reader-divider"></div>
   {% if article.content_html %}
   <div class="wechat-content">{{ article.content_html|safe }}</div>

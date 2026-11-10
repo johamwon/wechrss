@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}分组 Feed · WeRSS{% endblock %}
+{% block content %}
+<nav class="breadcrumb" aria-label="面包屑"><a href="/">公众号订阅</a><span>/</span><span>分组 Feed</span></nav>
+<section class="page-heading"><h1>分组 Feed</h1><p>把多个公众号放进同一个阅读器订阅。原有单号 Feed 不变。</p></section>
+<nav class="library-actions" aria-label="我的分组">
+  <a class="button" href="/groups" {% if not group %}aria-current="page"{% endif %}>新建分组</a>
+  {% for item in groups %}<a class="button" href="/groups/{{ item.id }}" {% if group and group.id == item.id %}aria-current="page"{% endif %}>{{ item.name }}</a>{% endfor %}
+</nav>
+{% if group %}
+<section class="card form-card library-section">
+  <h2>阅读器订阅地址</h2>
+  <label for="group-feed-url">分组专用链接</label>
+  <div class="feed-copy-row">
+    <input id="group-feed-url" value="{{ feed_url }}" readonly>
+    <button class="button primary" type="button" data-copy="{{ feed_url }}">复制地址</button>
+    <a class="button" href="/group-feeds/{{ group.id }}.xml" target="_blank" rel="noreferrer">预览 XML</a>
+  </div>
+  <p class="field-help">将此链接粘贴到阅读器。链接可直接读取此分组，请勿公开分享；阅读器仍需能访问部署地址。</p>
+  <form method="post" data-confirm="更换后旧链接将失效。确定更换吗？">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="button" name="action" value="rotate">更换专用链接</button>
+  </form>
+  <h3>文章预览</h3>
+  <p class="field-help">从各公众号现有 Feed 条数范围内，按标题规则筛选并合并最新 100 篇。这里预览前 10 篇。</p>
+  {% if preview %}<ol>{% for article in preview[:10] %}<li>{{ article.title }} · {{ fmt_ts(article.publish_at) }}</li>{% endfor %}</ol>
+  {% else %}<p>暂时没有符合规则的文章。请检查成员、同步状态和标题规则。</p>{% endif %}
+</section>
+{% endif %}
+{% if sources %}
+<form class="card form-card library-section" method="post">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2>{{ '编辑分组' if group else '新建分组' }}</h2>
+  <div class="field-group"><label for="group-name">分组名称</label><input id="group-name" name="name" value="{{ name }}" required maxlength="60" placeholder="例如：行业动态"></div>
+  <fieldset class="library-members">
+    <legend>选择公众号（最多 50 个）</legend>
+    {% for source in sources %}<label><input type="checkbox" name="source_{{ source.id }}" value="1" {% if source.id in members %}checked{% endif %}>{{ source.name or source.book_id }}</label>{% endfor %}
+  </fieldset>
+  <button class="button primary" type="submit">{{ '保存分组' if group else '创建分组' }}</button>
+</form>
+{% else %}<p>先<a href="/sources/new">添加一个公众号</a>，再创建或编辑分组。</p>{% endif %}
+{% if group %}
+<form method="post" data-confirm="删除分组会使分组链接失效，但不会删除公众号或文章。确定删除吗？">
+  <input type="hidden" name="csrf" value="{{ csrf }}"><button class="button" name="action" value="delete">删除分组</button>
+</form>
+{% endif %}
+{% endblock %}

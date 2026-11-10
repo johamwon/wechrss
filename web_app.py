@@ -22,9 +22,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from dotenv import load_dotenv
 
 from experience import diagnose_feed, normalize_public_url, source_health
+from library import Library
 from service import AppDB, CredentialStore, Scheduler, SyncService
 from weread_auth import LoginManager, WeReadAuthClient
-from wechat_mp_fetcher import FetcherError
+from wechat_mp_fetcher import FetcherError, render_rss
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -116,6 +117,7 @@ class WebApp:
         scheduler: Scheduler, login_manager: LoginManager | None = None,
     ):
         self.db = db
+        self.library = Library(db)
         self.credentials = credentials
         self.service = service
         self.scheduler = scheduler
@@ -138,6 +140,10 @@ class WebApp:
     def _authorized(self, environ) -> bool:
         match = re.fullmatch(r"/feeds/(\d+)\.xml", environ.get("PATH_INFO", ""))
         token = self._query(environ).get("token", "")
+        group_match = re.fullmatch(r"/group-feeds/([0-9]{1,18})\.xml", environ.get("PATH_INFO", ""))
+        if group_match and token and environ.get("REQUEST_METHOD", "GET") in {"GET", "HEAD"}:
+            group = self.library.group(int(group_match.group(1)))
+            return bool(group and hmac.compare_digest(token.encode(), group["token"].encode()))
         if match and token and environ.get("REQUEST_METHOD", "GET") in {"GET", "HEAD"}:
             source = self.db.get_source(int(match.group(1)))
             return bool(source and source.feed_token and hmac.compare_digest(token.encode(), source.feed_token.encode()))
@@ -362,6 +368,76 @@ class WebApp:
                 ctx = self._feed_context(source, environ, query.get("reader", "local")) if source else {}
                 return self._render(start_response, "onboarding.html", onboarding=onboarding,
                                     message=query.get("message", ""), error=query.get("error", ""), **ctx)
+
+            group_page = re.fullmatch(r"/groups(?:/([0-9]{1,18}))?", path)
+            if group_page and method in {"GET", "POST"}:
+                group_id = int(group_page.group(1)) if group_page.group(1) else None
+                group = self.library.group(group_id) if group_id is not None else None
+                if group_id is not None and not group:
+                    return self._text(start_response, "分组不存在", "404 Not Found")
+                members, preview = self.library.group_contents(group_id) if group else (set(), [])
+                sources = self.db.list_sources()
+                name = group["name"] if group else ""
+                error = ""
+                if method == "POST":
+                    form = self._form(environ)
+                    self._require_csrf(form)
+                    action = form.get("action", "save")
+                    if group and action in {"rotate", "delete"}:
+                        self.library.change_group(group_id, action)
+                        return self._redirect(start_response, f"/groups/{group_id}" if action == "rotate" else "/groups")
+                    name = form.get("name", "")
+                    members = {int(key[7:]) for key, value in form.items()
+                               if value == "1" and re.fullmatch(r"source_[0-9]{1,18}", key)}
+                    try:
+                        saved = self.library.save_group(group_id, name, sorted(members))
+                    except FetcherError as exc:
+                        error = str(exc)
+                    else:
+                        return self._redirect(start_response, f"/groups/{saved}")
+                feed_url = (
+                    f"{self._feed_base_url(environ)}/group-feeds/{group_id}.xml?token={group['token']}"
+                    if group else ""
+                )
+                return self._render(start_response, "groups.html", groups=self.library.groups(),
+                                    group=group, name=name, members=members, sources=sources,
+                                    preview=preview, feed_url=feed_url, error=error,
+                                    status="400 Bad Request" if error else "200 OK")
+
+            group_feed = re.fullmatch(r"/group-feeds/([0-9]{1,18})\.xml", path)
+            if group_feed and method in {"GET", "HEAD"}:
+                group_id = int(group_feed.group(1))
+                group = self.library.group(group_id)
+                if not group:
+                    return self._text(start_response, "Feed not found", "404 Not Found")
+                _, articles = self.library.group_contents(group_id)
+                payload = render_rss(articles, feed_title=group["name"],
+                                     feed_link=self._feed_base_url(environ) + f"/groups/{group_id}")
+                start_response("200 OK", [("Content-Type", "application/rss+xml; charset=utf-8"),
+                                          ("Content-Length", str(len(payload))), ("Cache-Control", "private, no-store")])
+                return [payload] if method == "GET" else []
+
+            if path == "/inbox" and method in {"GET", "POST"}:
+                fields = {"url": query.get("url", ""), "title": query.get("title", ""), "tags": "", "note": ""}
+                error = ""
+                if method == "POST":
+                    form = self._form(environ)
+                    self._require_csrf(form)
+                    if form.get("action") == "remove":
+                        if re.fullmatch(r"[0-9]{1,18}", form.get("id", "")):
+                            self.library.remove_bookmark(int(form["id"]))
+                        return self._redirect(start_response, "/inbox")
+                    fields = {key: form.get(key, "") for key in fields}
+                    try:
+                        saved = self.library.save_bookmark(**fields)
+                    except (FetcherError, ValueError) as exc:
+                        error = str(exc)
+                    else:
+                        return self._redirect(start_response, "/inbox?message=" + quote("已收藏" if saved else "这篇文章已收藏，原备注未更改"))
+                keyword = query.get("q", "").strip()[:200]
+                return self._render(start_response, "inbox.html", bookmarks=self.library.bookmarks(keyword),
+                                    fields=fields, keyword=keyword, error=error, message=query.get("message", ""),
+                                    status="400 Bad Request" if error else "200 OK")
 
             if path == "/sources/new" and method == "GET":
                 return self._render(start_response, "source_form.html", error=query.get("error", ""),
