@@ -146,7 +146,7 @@ def test_public_mode_keeps_pool_and_management_private(setup_pool, monkeypatch):
 
     meta, body = call_wsgi(app, "/")
     assert meta["status"].startswith("200")
-    assert meta["headers"]["Vary"] == "Authorization"
+    assert meta["headers"]["Vary"] == "Authorization, Cookie"
     path = f"/public-feeds/{source.id}.xml"
     assert path.encode() in body
     assert feed_token.encode() not in body

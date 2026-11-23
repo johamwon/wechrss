@@ -24,6 +24,7 @@ from wsgiref.simple_server import make_server, WSGIRequestHandler, WSGIServer
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from dotenv import load_dotenv
 
+from admin_login import AdminLogin
 from experience import diagnose_feed, normalize_public_url, source_health
 from library import Library
 from public_login import PublicLogin
@@ -131,6 +132,7 @@ class WebApp:
             int(os.getenv("WEREAD_QR_DEADLINE_SECONDS", "300")),
         ) if service.pool is not None else None
         self.admin_password = os.getenv("ADMIN_PASSWORD", "")
+        self.admin_login = AdminLogin()
         self.public_feeds = os.getenv("WECHAT_MP_PUBLIC_FEEDS", "") == "1"
         if (service.pool is not None or self.public_feeds) and not self.admin_password.strip():
             raise ValueError("启用账号池或公开订阅前，请设置 ADMIN_PASSWORD")
@@ -160,6 +162,11 @@ class WebApp:
             return bool(source and source.feed_token and hmac.compare_digest(token.encode(), source.feed_token.encode()))
         if not self.admin_password:
             return True
+        secure, local = self._browser_transport(environ)
+        if secure or local:
+            token = self._browser_cookie(environ, "werss_admin", secure)
+            if self.admin_login.authenticated(token, self.admin_password):
+                return True
         header = environ.get("HTTP_AUTHORIZATION", "")
         if not header.startswith("Basic "):
             return False
@@ -319,29 +326,87 @@ class WebApp:
         if not hmac.compare_digest(form.get("csrf", "").encode(), self.csrf_token.encode()):
             raise FetcherError("CSRF 校验失败，请刷新页面后重试")
 
+    def _browser_transport(self, environ) -> tuple[bool, bool]:
+        address = urlsplit(self._base_url(environ))
+        local = (environ.get("REMOTE_ADDR") in {"127.0.0.1", "::1"}
+                 and address.hostname in {"127.0.0.1", "::1", "localhost"})
+        return address.scheme == "https", local
+
+    @staticmethod
+    def _browser_cookie(environ, name: str, secure: bool) -> str:
+        try:
+            cookie = SimpleCookie(environ.get("HTTP_COOKIE", "")).get(("__Host-" if secure else "") + name)
+        except CookieError:
+            return ""
+        return cookie.value if cookie and re.fullmatch(r"[A-Za-z0-9_-]{43}", cookie.value) else ""
+
+    @staticmethod
+    def _cookie_header(name: str, value: str, secure: bool, max_age: int) -> tuple[str, str]:
+        name = ("__Host-" if secure else "") + name
+        return ("Set-Cookie", f"{name}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax"
+                + ("; Secure" if secure else ""))
+
+    def _admin_sign_in(self, environ, start_response, method):
+        secure, local = self._browser_transport(environ)
+        if not secure and not local:
+            return self._text(start_response, "请通过 HTTPS 打开管理员登录页", "403 Forbidden")
+        headers = [("Cache-Control", "no-store")]
+
+        def private_response(status, response_headers):
+            return start_response(status, response_headers + headers)
+
+        nonce = self._browser_cookie(environ, "werss_admin_login", secure)
+        status = "200 OK"
+        error = ""
+        if method == "POST":
+            form = self._form(environ)
+            if not nonce or not hmac.compare_digest(
+                form.get("csrf", "").encode(), self.admin_login.challenge(nonce).encode()
+            ):
+                status = "403 Forbidden"
+                error = "登录页面已过期，请刷新后重试。请在独立浏览器标签页打开本页。"
+            else:
+                token, issue = self.admin_login.sign_in(
+                    form.get("username", ""), form.get("password", ""), self.admin_password
+                )
+                if token:
+                    previous = self._browser_cookie(environ, "werss_admin", secure)
+                    self.admin_login.sign_out(previous)
+                    headers.append(self._cookie_header("werss_admin", token, secure, self.admin_login.max_age))
+                    return self._redirect(private_response, "/admin")
+                if issue == "limited":
+                    status = "429 Too Many Requests"
+                    headers.append(("Retry-After", "60"))
+                    error = "尝试次数过多，请一分钟后重试。"
+                else:
+                    status = "401 Unauthorized"
+                    error = "用户名或密码不正确。"
+        elif method != "GET":
+            return self._text(private_response, "Method not allowed", "405 Method Not Allowed")
+
+        if not nonce:
+            nonce = secrets.token_urlsafe(32)
+            headers.append(self._cookie_header("werss_admin_login", nonce, secure, 600))
+        page = self.env.get_template("admin_login.html").render(
+            csrf=self.admin_login.challenge(nonce), error=error, show_public=bool(self.public_login or self.public_feeds)
+        )
+        return self._text(private_response, page, status, "text/html; charset=utf-8")
+
     def _public_pool(self, environ, start_response, path, method, query):
         if path == "/account-pool/status" and method != "GET":
             return self._text(start_response, "Method not allowed", "405 Method Not Allowed")
         if path == "/account-pool" and method not in {"GET", "POST"}:
             return self._text(start_response, "Method not allowed", "405 Method Not Allowed")
 
-        secure = self._base_url(environ).startswith("https://")
-        loopback = (environ.get("REMOTE_ADDR") in {"127.0.0.1", "::1"}
-                    and urlsplit(self._base_url(environ)).hostname in {"127.0.0.1", "::1", "localhost"})
+        secure, loopback = self._browser_transport(environ)
         if not secure and not loopback:
             return self._text(start_response, "请通过 HTTPS 访问共享账号池", "403 Forbidden")
 
-        cookie_name = "__Host-werss_pool" if secure else "werss_pool"
-        try:
-            cookie = SimpleCookie(environ.get("HTTP_COOKIE", "")).get(cookie_name)
-        except CookieError:
-            cookie = None
-        visitor = cookie.value if cookie and re.fullmatch(r"[A-Za-z0-9_-]{43}", cookie.value) else ""
+        visitor = self._browser_cookie(environ, "werss_pool", secure)
         headers = [("Cache-Control", "no-store")]
         if not visitor and path == "/account-pool" and method == "GET":
             visitor = secrets.token_urlsafe(32)
-            value = f"{cookie_name}={visitor}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
-            headers.append(("Set-Cookie", value + ("; Secure" if secure else "")))
+            headers.append(self._cookie_header("werss_pool", visitor, secure, 31536000))
 
         def private_response(status, response_headers):
             return start_response(status, response_headers + headers)
@@ -381,17 +446,20 @@ class WebApp:
         def secure_start_response(status, headers, exc_info=None):
             names = {name.lower() for name, _ in headers}
             frame_ancestors = ALLOWED_FRAME_ANCESTORS or "'none'"
+            login_page = environ.get("PATH_INFO") == "/admin/login"
+            if login_page:
+                frame_ancestors = "'none'"
             common = [
                 ("X-Content-Type-Options", "nosniff"),
                 ("Referrer-Policy", "same-origin"),
                 ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
                 ("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors %s; base-uri 'self'; form-action 'self'" % frame_ancestors),
             ]
-            if not ALLOWED_FRAME_ANCESTORS:
+            if login_page or not ALLOWED_FRAME_ANCESTORS:
                 # 未显式放行时保留 X-Frame-Options 兜底（旧浏览器不支持 frame-ancestors）
                 common.append(("X-Frame-Options", "DENY"))
             if (self.public_feeds or self.public_login) and environ.get("PATH_INFO", "/") == "/":
-                common.extend([("Vary", "Authorization"), ("Cache-Control", "no-store")])
+                common.extend([("Vary", "Authorization, Cookie"), ("Cache-Control", "no-store")])
             headers = list(headers) + [(name, value) for name, value in common if name.lower() not in names]
             if exc_info is None:
                 return original_start_response(status, headers)
@@ -400,20 +468,34 @@ class WebApp:
         start_response = secure_start_response
         path = environ.get("PATH_INFO", "/")
         method = environ.get("REQUEST_METHOD", "GET").upper()
+        if path == "/admin/login" and self.admin_password:
+            return self._admin_sign_in(environ, start_response, method)
         authorized = self._authorized(environ)
         public_index = (self.public_feeds or self.public_login) and not authorized and method == "GET" and path == "/"
         public_feed = (re.fullmatch(r"/public-feeds/([0-9]{1,18})\.xml", path)
                        if self.public_feeds and method in {"GET", "HEAD"} else None)
         public_pool = self.public_login is not None and path in {"/account-pool", "/account-pool/status"}
-        public_asset = ((self.public_feeds or self.public_login) and method == "GET"
+        public_asset = ((self.admin_password or self.public_feeds or self.public_login) and method == "GET"
                         and path in {"/static/app.css", "/static/favicon.svg", "/static/app.js"})
         if not (authorized or public_index or public_feed or public_pool or public_asset):
+            if method == "GET" and self.admin_password and "text/html" in environ.get("HTTP_ACCEPT", ""):
+                if path in {"/", "/admin", "/settings", "/onboarding"}:
+                    return self._redirect(start_response, "/admin/login")
             body = b"Authentication required"
             start_response("401 Unauthorized", [("WWW-Authenticate", 'Basic realm="wechat-mp-fetcher"'), ("Content-Length", str(len(body)))])
             return [body]
 
         query = self._query(environ)
         try:
+            if path == "/admin/logout" and method == "POST" and self.admin_password:
+                self._require_csrf(self._form(environ))
+                secure, _ = self._browser_transport(environ)
+                self.admin_login.sign_out(self._browser_cookie(environ, "werss_admin", secure))
+                start_response("303 See Other", [
+                    ("Location", "/admin/login"), ("Cache-Control", "no-store"), ("Content-Length", "0"),
+                    self._cookie_header("werss_admin", "", secure, 0),
+                ])
+                return [b""]
             if public_pool:
                 return self._public_pool(environ, start_response, path, method, query)
             if public_index:
@@ -453,9 +535,13 @@ class WebApp:
 
             if path in {"/", "/admin"} and method == "GET":
                 sources = self.db.list_sources()
+                secure, local = self._browser_transport(environ)
                 return self._render(
                     start_response, "dashboard.html",
                     sources=sources, runs=self.db.recent_runs(limit=12),
+                    browser_admin=(secure or local) and self.admin_login.authenticated(
+                        self._browser_cookie(environ, "werss_admin", secure), self.admin_password
+                    ),
                     feed_urls={s.id: self._feed_url(s, environ) for s in sources},
                     message=query.get("message", ""), error=query.get("error", ""), base_url=self._base_url(environ),
                 )

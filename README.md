@@ -183,7 +183,7 @@ BIND_ADDRESS=0.0.0.0
 ADMIN_PASSWORD=换成足够强的密码
 ```
 
-管理用户名固定为 `admin`。敏感凭证保存在 `data/credentials.json`，该文件已被 Git 忽略，但仍应限制访问权限并安全备份。
+浏览器可在 `/admin/login` 登录，用户名为 `admin`，密码为 `ADMIN_PASSWORD`。在魔搭创空间中，请在独立标签页打开登录页。敏感凭证保存在 `data/credentials.json`，该文件已被 Git 忽略，但仍应限制访问权限并安全备份。
 
 <a id="configuration"></a>
 
@@ -191,7 +191,7 @@ ADMIN_PASSWORD=换成足够强的密码
 
 | 变量 | 默认值 | 说明 |
 |---|---:|---|
-| `ADMIN_PASSWORD` | 空 | Web Basic Auth 密码；远程访问时必须设置 |
+| `ADMIN_PASSWORD` | 空 | 管理网页登录和 Basic Auth 密码；远程访问时必须设置 |
 | `WEREAD_ACCOUNT_POOL` | `0` | 设为 `1` 开放微信读书扫码加入共享账号池 |
 | `WECHAT_MP_PUBLIC_FEEDS` | `0` | 设为 `1` 启用公开的只读订阅首页及 RSS 地址 |
 | `ALLOWED_FRAME_ANCESTORS` | 空 | 允许以 iframe 嵌入本站的源（空格分隔）；空时禁止嵌入。部署到 ModelScope 创空间等平台时设为平台域名 |

@@ -15,6 +15,12 @@
 <nav class="library-actions" aria-label="阅读工具">
   <a class="button" href="/groups">分组 Feed</a>
   <a class="button" href="/inbox">文章收件箱</a>
+  {% if browser_admin %}
+  <form method="post" action="/admin/logout">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="button" type="submit">退出管理员登录</button>
+  </form>
+  {% endif %}
 </nav>
 
 {% if not experience.onboarding_complete %}

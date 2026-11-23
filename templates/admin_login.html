@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>管理员登录 · WeRSS</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="shell page-content">
+  <section class="page-heading"><h1>管理员登录</h1><p>使用此实例配置的管理员密码登录 WechRSS。</p></section>
+  <form class="card form-card" method="post" action="/admin/login">
+    {% if error %}<p class="flash error" role="alert">{{ error }}</p>{% endif %}
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="field-group"><label for="admin-username">用户名</label>
+      <input id="admin-username" name="username" value="admin" autocomplete="username" required></div>
+    <div class="field-group"><label for="admin-password">管理员密码</label>
+      <input id="admin-password" type="password" name="password" autocomplete="current-password" required></div>
+    <button class="button primary" type="submit">登录</button>
+    {% if show_public %}<a class="button" href="/">返回公开页面</a>{% endif %}
+  </form>
+</main>
+</body>
+</html>
