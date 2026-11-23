@@ -8,8 +8,10 @@ COPY requirements.txt ./
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libatomic1 \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir -r requirements.txt \
-    && python -m playwright install --with-deps chromium
+    && pip install --no-cache-dir -r requirements.txt
+RUN python -m playwright install-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m playwright install --only-shell chromium
 COPY . .
 RUN mkdir -p /app/data
 EXPOSE 8080 7860
