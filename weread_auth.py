@@ -38,6 +38,14 @@ class WeReadAuthError(RuntimeError):
     pass
 
 
+class RefreshExpiredError(WeReadAuthError):
+    pass
+
+
+class RefreshRiskError(WeReadAuthError):
+    pass
+
+
 class QRExpiredError(WeReadAuthError):
     pass
 
@@ -325,8 +333,16 @@ class WeReadAuthClient:
             data=json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8"),
             timeout=self.timeout,
         )
+        if response.status_code in {403, 429}:
+            raise RefreshRiskError("微信读书续期请求受限")
+        if response.status_code == 401:
+            raise RefreshExpiredError("微信读书续期凭证已失效")
         payload = self._json_response(response, "微信读书凭证续期")
         code, msg = self._payload_error(payload)
+        if code in {-2041, -2010}:
+            raise RefreshRiskError("微信读书要求人工处理后再续期")
+        if code == -2012:
+            raise RefreshExpiredError("微信读书续期凭证已失效")
         access_token = str(payload.get("accessToken") or "")
         if not response.ok or not access_token:
             raise WeReadAuthError(f"凭证续期失败: {code or response.status_code} {msg}".strip())
@@ -387,10 +403,12 @@ class LoginManager:
         persist: Callable[[WeReadCredentials], None],
         *,
         deadline_seconds: int = 300,
+        initialize_session: bool = True,
     ):
         self.auth_client = auth_client
         self.persist = persist
         self.deadline_seconds = max(60, int(deadline_seconds))
+        self.initialize_session = initialize_session
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
@@ -407,6 +425,9 @@ class LoginManager:
     def status(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._state)
+
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def _update(self, **values: Any) -> None:
         with self._lock:
@@ -438,6 +459,8 @@ class LoginManager:
     def _run(self) -> None:
         try:
             qr = self.auth_client.request_qr()
+            if self._cancel.is_set():
+                return
             deadline = time.time() + self.deadline_seconds
             self._update(
                 status="waiting",
@@ -454,6 +477,8 @@ class LoginManager:
                     poll = self.auth_client.poll_qr_once(qr.uuid, last=last, timeout=20)
                 except requests.Timeout:
                     continue
+                if self._cancel.is_set():
+                    return
                 last = poll.errcode
                 if poll.status == "waiting":
                     continue
@@ -463,12 +488,16 @@ class LoginManager:
                 if poll.status == "confirmed":
                     self._update(status="exchanging", message="已确认，正在建立微信读书会话…")
                     credentials = self.auth_client.exchange_qr(poll.wx_code)
-                    self._update(status="initializing", message="登录成功，正在初始化账号状态…")
-                    init = self.auth_client.initialize_feature(credentials)
-                    if init.guest_token:
-                        credentials.guestToken = init.guest_token
-                    if init.sync_key:
-                        credentials.syncKey = init.sync_key
+                    init = SessionInitResult()
+                    if self.initialize_session and not self._cancel.is_set():
+                        self._update(status="initializing", message="登录成功，正在初始化账号状态…")
+                        init = self.auth_client.initialize_feature(credentials)
+                        if init.guest_token:
+                            credentials.guestToken = init.guest_token
+                        if init.sync_key:
+                            credentials.syncKey = init.sync_key
+                    if self._cancel.is_set():
+                        return
                     self.persist(credentials)
                     suffix = ""
                     if init.warnings:

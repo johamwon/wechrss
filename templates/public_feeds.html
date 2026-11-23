@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>公开订阅 · WeRSS</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<main class="shell" id="main-content">
+  <section class="page-heading heading-with-action">
+    <div><h1>公众号公开订阅</h1><p>将 RSS 链接添加到阅读器，查看已同步的文章。</p></div>
+    <a class="button" href="/admin">管理员入口</a>
+    {% if show_pool %}<a class="button primary" href="/account-pool" target="_blank" rel="noopener">共享账号池</a>{% endif %}
+  </section>
+  <section class="card form-card" aria-label="公开订阅列表">
+    {% for source in sources %}
+    <div class="setting-row">
+      <div><strong>{{ source.name or source.book_id }}</strong><p>{{ source.article_count }} 篇文章</p></div>
+      <a class="button" href="{{ base_url }}/public-feeds/{{ source.id }}.xml">RSS 链接</a>
+    </div>
+    {% else %}
+    <p>暂时没有公开订阅。</p>
+    {% endfor %}
+  </section>
+</main>
+</body>
+</html>

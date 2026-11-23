@@ -43,7 +43,28 @@
         </div>
       </div>
 
-      {% if credential_status.environment_configured %}
+      {% if 'accounts' in credential_status %}
+      <section class="advanced" id="account-pool" aria-label="账号池">
+        <h3>账号池（{{ credential_status.accounts|length }} 个账号）</h3>
+        <p>访客可在<a href="/account-pool">公开账号池</a>扫码授权并查看验证结果。</p>
+        {% if experience.account_issue == 'risk_control' %}
+        <form method="post" action="/settings/account-pool" data-confirm="确认已在官方应用处理验证，并已等待平台限频解除？">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="button" name="action" value="resume">确认处理并恢复同步</button>
+        </form>
+        {% endif %}
+        {% for account in credential_status.accounts %}
+        <div class="setting-row">
+          <div><strong>{{ account.name or ('VID ' ~ account.vid) }}</strong>
+            <p>{{ {'valid': '最近验证有效', 'pending': '待验证', 'expired': '已失效，请重新扫码'}[account.state] }}{% if account.checked_at %} · {{ fmt_ts(account.checked_at) }}{% endif %}</p>
+          </div>
+          <form method="post" action="/settings/account-pool" data-confirm="移除此账号在账号池中的会话？">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="vid" value="{{ account.vid }}">
+            <button class="button" name="action" value="remove">移除</button>
+          </form>
+        </div>
+        {% endfor %}
+      </section>
+      {% elif credential_status.environment_configured %}
       <div class="inline-alert warn"><strong>检测到旧版环境变量凭证</strong><p>扫码登录会写入本地文件，但重启后环境变量仍会优先生效。登录成功后建议移除旧变量。</p></div>
       {% endif %}
 
@@ -51,12 +72,12 @@
         <form method="post" action="/settings/login/start" data-loading-form data-loading-label="正在生成…">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="next" value="{{ 'onboarding' if next_onboarding else '' }}">
-          <button class="button primary" id="login-start" type="submit">{{ '重新扫码登录' if credential_status.configured else '微信扫码登录' }}</button>
+          <button class="button primary" id="login-start" type="submit">{{ '扫码添加或更新账号' if 'accounts' in credential_status else '重新扫码登录' if credential_status.configured else '微信扫码登录' }}</button>
         </form>
         {% if login_status.status in ['requesting', 'waiting', 'scanned', 'exchanging', 'initializing'] %}
         <form method="post" action="/settings/login/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button" id="login-cancel" type="submit">取消扫码</button></form>
         {% endif %}
-        {% if credential_status.refreshable %}
+        {% if credential_status.refreshable and 'accounts' not in credential_status %}
         <form method="post" action="/settings/session/refresh" data-loading-form data-loading-label="续期中…"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button" type="submit">立即续期</button></form>
         {% endif %}
       </div>
@@ -64,12 +85,14 @@
       <details class="advanced">
         <summary>连接诊断与高级选项</summary>
         <div class="advanced-content">
+          {% if 'accounts' not in credential_status %}
           <div class="account-details">
             <div><span>登录来源</span><strong>{{ credential_status.source if credential_status.configured else '未连接' }}</strong></div>
             <div><span>自动续期</span><strong>{{ '可用' if credential_status.refreshable else '重新扫码可尝试启用' }}</strong></div>
             <div><span>会话类型</span><strong>{{ credential_status.profile if credential_status.configured else '—' }}</strong></div>
             <div><span>凭证更新</span><strong>{{ fmt_relative_ts(credential_status.updated_at) }}</strong></div>
           </div>
+          {% endif %}
           <h3>手工导入旧版凭证</h3>
           <p>仅建议用于迁移。只填写 AccessToken 和 VID 无法自动续期。</p>
           <form method="post" action="/settings/credentials" class="inline-fields">
@@ -78,7 +101,7 @@
             <div class="field-group"><label for="vid">VID</label><input id="vid" name="vid" inputmode="numeric" required></div>
             <button class="button" type="submit">导入凭证</button>
           </form>
-          {% if credential_status.configured %}
+          {% if credential_status.configured and 'accounts' not in credential_status %}
           <div class="session-hints"><code>{{ credential_status.token_hint or '—' }}</code><span>AccessToken</span><code>{{ credential_status.refresh_hint or '—' }}</code><span>RefreshToken</span></div>
           <form method="post" action="/settings/credentials/clear" data-confirm="确定退出登录并删除本地凭证吗？"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="text-button danger-text" type="submit">退出登录并删除本地凭证</button></form>
           {% endif %}

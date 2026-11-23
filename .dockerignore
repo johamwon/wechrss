@@ -9,5 +9,8 @@ data
 *.sqlite
 *.db
 .env
+**/credentials.json
+**/*.pool.json
+**/*.pool.json.*.tmp
 tests
 docs

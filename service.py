@@ -16,13 +16,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from weread_auth import WeReadAuthClient, WeReadAuthError, WeReadCredentials
+import requests
+
+from account_pool import AccountPool
+from weread_auth import RefreshExpiredError, RefreshRiskError, WeReadAuthClient, WeReadAuthError, WeReadCredentials
 from article_identity import ArticleIdentityError, resolve_article_identity
 
 from wechat_mp_fetcher import (
     Article,
     AuthExpiredError,
     FetcherError,
+    RateLimiter,
     RiskControlError,
     WeReadMobileClient,
     article_exists,
@@ -706,6 +710,7 @@ class SyncService:
         request_interval: float = 2.0,
         timeout: float = 20.0,
         auth_client: WeReadAuthClient | None = None,
+        account_pool: bool = False,
     ):
         self.db = db
         self.credentials = credentials
@@ -713,6 +718,9 @@ class SyncService:
         self.timeout = timeout
         self.auth_client = auth_client or WeReadAuthClient(timeout=timeout)
         self._lock = threading.Lock()
+        self._account_lock = threading.Lock()
+        self.pool = AccountPool(credentials.path.with_suffix(".pool.json"), credentials) if account_pool else None
+        self._pool_limiter = RateLimiter(self.request_interval)
         self._refresh_lock = threading.Lock()
         self._queue_lock = threading.Lock()
         self._pending: list[int] = []
@@ -725,9 +733,40 @@ class SyncService:
     def clear_account_issue(self) -> None:
         self.db.set_setting("account_issue", "")
 
-    def save_credentials(self, record: WeReadCredentials) -> None:
-        self.credentials.save_record(record)
-        self.clear_account_issue()
+    def save_credentials(self, record: WeReadCredentials, *, owner: str = "") -> None:
+        if self.pool is None:
+            self.credentials.save_record(record)
+            self.clear_account_issue()
+            return
+        with self._account_lock:
+            self.pool.save(record, owner=owner)
+            if self.account_issue() == "auth_expired":
+                self.clear_account_issue()
+
+    def credential_status(self) -> dict:
+        return self.pool.status() if self.pool is not None else self.credentials.status()
+
+    def remove_pool_account(self, vid: str) -> None:
+        with self._account_lock:
+            self.pool.remove(vid)
+            self._update_pool_issue_after_removal()
+
+    def revoke_pool_contribution(self, public_id: str, owner: str) -> bool:
+        with self._account_lock:
+            removed = self.pool.revoke(public_id, owner)
+            if removed:
+                self._update_pool_issue_after_removal()
+            return removed
+
+    def _update_pool_issue_after_removal(self) -> None:
+        if self.account_issue() != "risk_control":
+            state = "auth_expired" if self.pool.status()["configured"] and not self.pool.candidates() else ""
+            self.db.set_setting("account_issue", state)
+
+    def resume_pool(self) -> None:
+        with self._account_lock:
+            if self.account_issue() == "risk_control":
+                self.db.set_setting("account_issue", "" if self.pool.candidates() else "auth_expired")
 
     def is_queued(self, source_id: int) -> bool:
         with self._queue_lock:
@@ -738,7 +777,9 @@ class SyncService:
             return bool(self._queued)
 
     def queue_sync(self, source_id: int) -> None:
-        if not self.credentials.status()["configured"]:
+        if self.pool is not None and self.account_issue() == "risk_control":
+            raise FetcherError("账号池已暂停，请先在官方应用处理验证，再到设置中恢复")
+        if not self.credential_status()["configured"]:
             raise FetcherError("请先连接微信读书账号，再开始同步")
         if not self.db.get_source(source_id):
             raise FetcherError("公众号不存在")
@@ -798,6 +839,8 @@ class SyncService:
         There is no retry loop: a failed refresh is surfaced to the caller so the UI can ask for
         a new QR login instead of hammering /login.
         """
+        if self.pool is not None:
+            raise FetcherError("账号池会在同步时按需续期")
         with self._refresh_lock:
             record = self.credentials.get_record()
             if not record.can_refresh:
@@ -806,13 +849,62 @@ class SyncService:
                 raise FetcherError("当前会话不是 Web 扫码创建的可续期会话，请重新扫码登录后再使用自动续期")
             try:
                 refreshed = self.auth_client.refresh(record)
+            except RefreshRiskError as exc:
+                self.db.set_setting("account_issue", "risk_control")
+                raise RiskControlError(str(exc)) from exc
             except WeReadAuthError as exc:
                 self.db.set_setting("account_issue", "auth_expired")
                 raise AuthExpiredError(str(exc)) from exc
             self.save_credentials(refreshed)
             return refreshed
 
+    def _pool_request(self, action):
+        # Keep validation, refresh and saving state atomic with respect to admin changes.
+        with self._account_lock:
+            return self._request_from_pool(action)
+
+    def _request_from_pool(self, action):
+        if self.account_issue() == "risk_control":
+            raise RiskControlError("账号池已暂停，请处理验证后在设置中恢复")
+        candidates = self.pool.candidates()
+        # Keep a single sync bounded even if many sessions have expired.
+        for record in candidates[:3]:
+            try:
+                try:
+                    self._pool_limiter.wait()
+                    result = action(self._client_for(record))
+                except AuthExpiredError:
+                    if not (record.can_refresh and record.profile.startswith("eink")):
+                        raise
+                    self.pool.mark(record.vid, "pending")
+                    self._pool_limiter.wait()
+                    refreshed = self.auth_client.refresh(record)
+                    if refreshed.vid != record.vid:
+                        raise WeReadAuthError("续期账号不匹配")
+                    self.pool.save(refreshed)
+                    self._pool_limiter.wait()
+                    result = action(self._client_for(refreshed))
+            except (AuthExpiredError, RefreshExpiredError):
+                self.pool.mark(record.vid, "expired")
+                continue
+            except (RiskControlError, RefreshRiskError):
+                self.db.set_setting("account_issue", "risk_control")
+                self.pool.mark(record.vid, "pending")
+                raise RiskControlError("微信读书限制请求，账号池已暂停") from None
+            except (requests.RequestException, WeReadAuthError, FetcherError):
+                raise FetcherError("微信读书暂未返回可用结果，请稍后重试") from None
+            self.pool.mark(record.vid, "valid")
+            if self.account_issue() == "auth_expired":
+                self.clear_account_issue()
+            return result
+        if len(candidates) > 3:
+            raise FetcherError("本次已检查 3 个失效会话，下次同步将检查其余候选账号")
+        self.db.set_setting("account_issue", "auth_expired")
+        raise AuthExpiredError("账号池没有可用会话，请在设置中扫码重新连接")
+
     def _get_articles_with_auto_refresh(self, source: Source) -> list[Article]:
+        if self.pool is not None:
+            return self._pool_request(lambda client: client.get_articles(source.book_id, count=20, synckey=0))
         record = self.credentials.get_record()
         client = self._client_for(record)
         try:
@@ -822,6 +914,8 @@ class SyncService:
             # for credential rotation and are never automatically retried.
             try:
                 refreshed = self.refresh_credentials()
+            except RiskControlError:
+                raise
             except FetcherError as exc:
                 raise AuthExpiredError(str(exc)) from exc
             client = self._client_for(refreshed)
@@ -853,10 +947,11 @@ class SyncService:
             except Exception as exc:
                 result = SyncResult(source.id, 0, 0, 0, "error", str(exc))
             self.db.mark_sync_finish(source, run_id, result)
-            if result.status in {"auth_expired", "risk_control"}:
-                self.db.set_setting("account_issue", result.status)
-            elif result.status == "ok":
-                self.clear_account_issue()
+            if self.pool is None:
+                if result.status in {"auth_expired", "risk_control"}:
+                    self.db.set_setting("account_issue", result.status)
+                elif result.status == "ok":
+                    self.clear_account_issue()
             if result.status == "ok" and result.new_count > 0:
                 self.notify_webhooks("new_articles", {
                     "source_id": source.id,
@@ -891,6 +986,8 @@ class SyncService:
                 self.db.record_webhook_trigger(wh["id"], False, str(exc))
 
     def _resolve_url_with_auto_refresh(self, review_id: str) -> str:
+        if self.pool is not None:
+            return self._pool_request(lambda client: client.resolve_article_url(review_id))
         try:
             record = self.credentials.get_record()
             client = self._client_for(record)
@@ -899,6 +996,8 @@ class SyncService:
             except AuthExpiredError:
                 try:
                     refreshed = self.refresh_credentials()
+                except RiskControlError:
+                    raise
                 except FetcherError as exc:
                     raise AuthExpiredError(str(exc)) from exc
                 return self._client_for(refreshed).resolve_article_url(review_id)
@@ -1135,7 +1234,7 @@ class Scheduler:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            if self.enabled and self.service.credentials.status()["configured"] and not self.service.account_issue():
+            if self.enabled and self.service.credential_status()["configured"] and not self.service.account_issue():
                 for source in self.db.due_sources():
                     if self._stop.is_set() or self.service.account_issue():
                         break

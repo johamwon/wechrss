@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -14,8 +15,10 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from dataclasses import replace
 from urllib.parse import parse_qs, quote, urlsplit
 from socketserver import ThreadingMixIn
+from http.cookies import CookieError, SimpleCookie
 from wsgiref.simple_server import make_server, WSGIRequestHandler, WSGIServer
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -23,8 +26,9 @@ from dotenv import load_dotenv
 
 from experience import diagnose_feed, normalize_public_url, source_health
 from library import Library
+from public_login import PublicLogin
 from service import AppDB, CredentialStore, Scheduler, SyncService
-from weread_auth import LoginManager, WeReadAuthClient
+from weread_auth import LoginManager, WeReadAuthClient, WeReadCredentials
 from wechat_mp_fetcher import FetcherError, render_rss
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -122,7 +126,14 @@ class WebApp:
         self.service = service
         self.scheduler = scheduler
         self.login_manager = login_manager or LoginManager(service.auth_client, service.save_credentials)
+        self.public_login = PublicLogin(
+            lambda: WeReadAuthClient(timeout=service.timeout), service.save_credentials,
+            int(os.getenv("WEREAD_QR_DEADLINE_SECONDS", "300")),
+        ) if service.pool is not None else None
         self.admin_password = os.getenv("ADMIN_PASSWORD", "")
+        self.public_feeds = os.getenv("WECHAT_MP_PUBLIC_FEEDS", "") == "1"
+        if (service.pool is not None or self.public_feeds) and not self.admin_password.strip():
+            raise ValueError("启用账号池或公开订阅前，请设置 ADMIN_PASSWORD")
         self.public_base_url = normalize_public_url(os.getenv("PUBLIC_BASE_URL", ""))
         self.csrf_token = os.getenv("WECHAT_MP_CSRF_TOKEN", "") or secrets.token_urlsafe(32)
         self.env = Environment(
@@ -179,7 +190,7 @@ class WebApp:
         return url + ("?token=" + quote(source.feed_token, safe="") if source.feed_token else "")
 
     def _experience(self) -> dict:
-        configured = self.credentials.status()["configured"]
+        configured = self.service.credential_status()["configured"]
         issue = self.service.account_issue()
         sources = self.db.list_sources()
         items = []
@@ -214,7 +225,7 @@ class WebApp:
         sources = self.db.list_sources()
         selected = self.db.get_setting("onboarding_source_id")
         source = next((s for s in sources if str(s.id) == selected), sources[0] if sources else None)
-        if not self.credentials.status()["configured"] or self.service.account_issue() in {"auth_expired", "risk_control"}:
+        if not self.service.credential_status()["configured"] or self.service.account_issue() in {"auth_expired", "risk_control"}:
             step = 1
         elif source is None:
             step = 2
@@ -232,7 +243,7 @@ class WebApp:
                 "diagnosis": diagnose_feed(self._feed_base_url(environ), target,
                                            password_required=bool(self.admin_password),
                                            token_available=bool(source.feed_token)),
-                "health": source_health(source, configured=self.credentials.status()["configured"],
+                "health": source_health(source, configured=self.service.credential_status()["configured"],
                                         scheduler_enabled=self.scheduler.enabled,
                                         account_issue=self.service.account_issue(), queued=self.service.is_queued(source.id))}
 
@@ -262,7 +273,7 @@ class WebApp:
 
     def _render(self, start_response, template: str, *, status="200 OK", **ctx):
         ctx.setdefault("csrf", self.csrf_token)
-        ctx.setdefault("credential_status", self.credentials.status())
+        ctx.setdefault("credential_status", self.service.credential_status())
         ctx.setdefault("experience", self._experience())
         ctx.setdefault("source_health_by_id", {item["id"]: item["health"] for item in ctx["experience"]["sources"]})
         ctx.setdefault("scheduler_enabled", self.scheduler.enabled)
@@ -308,6 +319,62 @@ class WebApp:
         if not hmac.compare_digest(form.get("csrf", "").encode(), self.csrf_token.encode()):
             raise FetcherError("CSRF 校验失败，请刷新页面后重试")
 
+    def _public_pool(self, environ, start_response, path, method, query):
+        if path == "/account-pool/status" and method != "GET":
+            return self._text(start_response, "Method not allowed", "405 Method Not Allowed")
+        if path == "/account-pool" and method not in {"GET", "POST"}:
+            return self._text(start_response, "Method not allowed", "405 Method Not Allowed")
+
+        secure = self._base_url(environ).startswith("https://")
+        loopback = (environ.get("REMOTE_ADDR") in {"127.0.0.1", "::1"}
+                    and urlsplit(self._base_url(environ)).hostname in {"127.0.0.1", "::1", "localhost"})
+        if not secure and not loopback:
+            return self._text(start_response, "请通过 HTTPS 访问共享账号池", "403 Forbidden")
+
+        cookie_name = "__Host-werss_pool" if secure else "werss_pool"
+        try:
+            cookie = SimpleCookie(environ.get("HTTP_COOKIE", "")).get(cookie_name)
+        except CookieError:
+            cookie = None
+        visitor = cookie.value if cookie and re.fullmatch(r"[A-Za-z0-9_-]{43}", cookie.value) else ""
+        headers = [("Cache-Control", "no-store")]
+        if not visitor and path == "/account-pool" and method == "GET":
+            visitor = secrets.token_urlsafe(32)
+            value = f"{cookie_name}={visitor}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
+            headers.append(("Set-Cookie", value + ("; Secure" if secure else "")))
+
+        def private_response(status, response_headers):
+            return start_response(status, response_headers + headers)
+
+        owner = hashlib.sha256(visitor.encode()).hexdigest() if visitor else ""
+        csrf = hmac.new(self.csrf_token.encode(), ("pool:" + owner).encode(), "sha256").hexdigest()
+        if path == "/account-pool/status":
+            return self._json(private_response, self.public_login.status(owner))
+        if method == "POST":
+            form = self._form(environ)
+            if not owner or not hmac.compare_digest(form.get("csrf", "").encode(), csrf.encode()):
+                return self._text(private_response, "请在独立浏览器标签页打开账号池后重试", "403 Forbidden")
+            action = form.get("action")
+            if action == "start" and form.get("consent") == "1":
+                started = self.public_login.start(owner)
+                return self._redirect(private_response, "/account-pool" if started else "/account-pool?busy=1")
+            if action == "cancel":
+                self.public_login.cancel(owner)
+            elif action == "revoke" and re.fullmatch(r"[a-f0-9]{16}", form.get("id", "")):
+                self.service.revoke_pool_contribution(form["id"], owner)
+            else:
+                return self._text(private_response, "请选择有效操作并确认授权", "400 Bad Request")
+            return self._redirect(private_response, "/account-pool")
+
+        page = query.get("page", "")
+        overview = self.service.pool.public_status(owner, int(page) if re.fullmatch(r"[0-9]{1,8}", page) else 1)
+        html = self.env.get_template("public_pool.html").render(
+            **overview, login=self.public_login.status(owner), states=LoginManager.ACTIVE,
+            paused=self.service.account_issue() == "risk_control", busy=query.get("busy") == "1",
+            csrf=csrf, show_feeds=self.public_feeds,
+        )
+        return self._text(private_response, html, content_type="text/html; charset=utf-8")
+
     def __call__(self, environ, start_response):
         original_start_response = start_response
 
@@ -323,21 +390,52 @@ class WebApp:
             if not ALLOWED_FRAME_ANCESTORS:
                 # 未显式放行时保留 X-Frame-Options 兜底（旧浏览器不支持 frame-ancestors）
                 common.append(("X-Frame-Options", "DENY"))
+            if (self.public_feeds or self.public_login) and environ.get("PATH_INFO", "/") == "/":
+                common.extend([("Vary", "Authorization"), ("Cache-Control", "no-store")])
             headers = list(headers) + [(name, value) for name, value in common if name.lower() not in names]
             if exc_info is None:
                 return original_start_response(status, headers)
             return original_start_response(status, headers, exc_info)
 
         start_response = secure_start_response
-        if not self._authorized(environ):
+        path = environ.get("PATH_INFO", "/")
+        method = environ.get("REQUEST_METHOD", "GET").upper()
+        authorized = self._authorized(environ)
+        public_index = (self.public_feeds or self.public_login) and not authorized and method == "GET" and path == "/"
+        public_feed = (re.fullmatch(r"/public-feeds/([0-9]{1,18})\.xml", path)
+                       if self.public_feeds and method in {"GET", "HEAD"} else None)
+        public_pool = self.public_login is not None and path in {"/account-pool", "/account-pool/status"}
+        public_asset = ((self.public_feeds or self.public_login) and method == "GET"
+                        and path in {"/static/app.css", "/static/favicon.svg", "/static/app.js"})
+        if not (authorized or public_index or public_feed or public_pool or public_asset):
             body = b"Authentication required"
             start_response("401 Unauthorized", [("WWW-Authenticate", 'Basic realm="wechat-mp-fetcher"'), ("Content-Length", str(len(body)))])
             return [body]
 
-        path = environ.get("PATH_INFO", "/")
-        method = environ.get("REQUEST_METHOD", "GET").upper()
         query = self._query(environ)
         try:
+            if public_pool:
+                return self._public_pool(environ, start_response, path, method, query)
+            if public_index:
+                if not self.public_feeds:
+                    return self._redirect(start_response, "/account-pool")
+                page = self.env.get_template("public_feeds.html").render(
+                    sources=self.db.list_sources(), base_url=self._feed_base_url(environ), show_pool=bool(self.public_login)
+                )
+                return self._text(start_response, page, content_type="text/html; charset=utf-8")
+            if public_feed:
+                source = self.db.get_source(int(public_feed.group(1)))
+                if not source:
+                    return self._text(start_response, "Feed not found", "404 Not Found")
+                articles = [
+                    replace(article, content_html="")
+                    for article in self.db.get_articles(source.book_id, limit=source.rss_limit)
+                ]
+                payload = render_rss(articles, feed_title=source.name or source.book_id,
+                                     feed_link=self._feed_base_url(environ) + "/")
+                start_response("200 OK", [("Content-Type", "application/rss+xml; charset=utf-8"),
+                                          ("Content-Length", str(len(payload)))])
+                return [payload] if method == "GET" else []
             if path in {"/static/app.css", "/static/app.js", "/static/favicon.svg", "/static/qrcode.png"} and method == "GET":
                 asset = BASE_DIR / "static" / path.rsplit("/", 1)[-1]
                 data = asset.read_bytes()
@@ -353,7 +451,7 @@ class WebApp:
                 ])
                 return [data]
 
-            if path == "/" and method == "GET":
+            if path in {"/", "/admin"} and method == "GET":
                 sources = self.db.list_sources()
                 return self._render(
                     start_response, "dashboard.html",
@@ -457,7 +555,7 @@ class WebApp:
                                         next_onboarding=form.get("next") == "onboarding")
                 self.db.set_setting("onboarding_source_id", str(src.id))
                 message = "公众号已添加，请先连接账号后开始同步"
-                if self.credentials.status()["configured"] and not self.service.account_issue():
+                if self.service.credential_status()["configured"] and not self.service.account_issue():
                     self.service.queue_sync(src.id)
                     message = "公众号已添加，正在安排首次同步"
                 target = "/onboarding" if form.get("next") == "onboarding" else f"/sources/{src.id}"
@@ -516,7 +614,7 @@ class WebApp:
                 if not self.db.get_source(source_id):
                     raise FetcherError("公众号不存在")
                 if m.group(2) == "verify":
-                    if not self.credentials.status()["configured"] or self.service.is_queued(source_id) or self.service.account_issue():
+                    if not self.service.credential_status()["configured"] or self.service.is_queued(source_id) or self.service.account_issue():
                         raise FetcherError("请等待同步成功后，再确认阅读器中的文章")
                     self.db.verify_feed(source_id)
                     message = "订阅验证完成！以后将按设定频率自动同步。"
@@ -643,15 +741,33 @@ class WebApp:
 
             if path == "/settings/credentials" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
-                self.credentials.save(form.get("access_token", ""), form.get("vid", ""))
-                self.service.clear_account_issue()
+                if self.service.pool is not None:
+                    self.service.save_credentials(WeReadCredentials(
+                        vid=form.get("vid", "").strip(), accessToken=form.get("access_token", "").strip(),
+                        profile="manual",
+                    ))
+                else:
+                    self.credentials.save(form.get("access_token", ""), form.get("vid", ""))
+                    self.service.clear_account_issue()
                 return self._redirect(start_response, "/settings?message=" + quote("本地凭证已保存"))
 
             if path == "/settings/credentials/clear" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
+                if self.service.pool is not None:
+                    raise FetcherError("请从账号池列表移除指定账号")
                 self.credentials.clear_file()
                 self.service.clear_account_issue()
                 return self._redirect(start_response, "/settings?message=" + quote("本地凭证文件已删除"))
+
+            if path == "/settings/account-pool" and method == "POST" and self.service.pool is not None:
+                form = self._form(environ); self._require_csrf(form)
+                if form.get("action") == "resume":
+                    self.service.resume_pool()
+                elif form.get("action") == "remove" and re.fullmatch(r"[0-9]{1,32}", form.get("vid", "")):
+                    self.service.remove_pool_account(form["vid"])
+                else:
+                    raise FetcherError("无效的账号池操作")
+                return self._redirect(start_response, "/settings#account-pool")
 
             if path == "/settings/scheduler" and method == "POST":
                 form = self._form(environ); self._require_csrf(form)
@@ -760,7 +876,7 @@ class WebApp:
 
             if path == "/api/health" and method == "GET":
                 import shutil
-                cs = self.credentials.status()
+                cs = self.service.credential_status()
                 integrity = self.db.check_integrity()
                 db_stats = self.db.get_stats()
                 sync_stats = self.db.get_recent_sync_stats(hours=24)
@@ -792,17 +908,26 @@ class WebApp:
 
             return self._render(start_response, "error.html", status="404 Not Found", error="这个页面不存在，或地址已经发生变化。")
         except (FetcherError, ValueError) as exc:
+            if public_index or public_feed or public_pool:
+                return self._text(start_response, "订阅暂时不可用", "503 Service Unavailable")
             if method == "POST":
                 target = self._safe_return_path(environ)
                 sep = "&" if "?" in target else "?"
                 return self._redirect(start_response, target + sep + "error=" + quote(str(exc)))
             return self._render(start_response, "error.html", status="400 Bad Request", error=str(exc))
         except Exception as exc:
+            if public_index or public_feed or public_pool:
+                logger.exception("Public feed unavailable")
+                return self._text(start_response, "订阅暂时不可用", "503 Service Unavailable")
             print(f"[web-error] {exc}", file=sys.stderr)
             return self._render(start_response, "error.html", status="500 Internal Server Error", error=str(exc))
 
 
 def build_runtime():
+    pool_enabled = os.getenv("WEREAD_ACCOUNT_POOL", "") == "1"
+    public_feeds = os.getenv("WECHAT_MP_PUBLIC_FEEDS", "") == "1"
+    if (pool_enabled or public_feeds) and not os.getenv("ADMIN_PASSWORD", "").strip():
+        raise ValueError("启用账号池或公开订阅前，请设置 ADMIN_PASSWORD")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     db = AppDB(DB_PATH)
     credentials = CredentialStore(CREDENTIALS_PATH)
@@ -813,6 +938,7 @@ def build_runtime():
         request_interval=float(os.getenv("WEREAD_MIN_INTERVAL", "2")),
         timeout=timeout,
         auth_client=auth_client,
+        account_pool=pool_enabled,
     )
     scheduler = Scheduler(db, service, poll_seconds=int(os.getenv("SCHEDULER_POLL_SECONDS", "30")))
     login_manager = LoginManager(

@@ -287,7 +287,7 @@
 
     async function pollLogin() {
       try {
-        const response = await fetch("/api/login/status", {
+        const response = await fetch(loginPanel.dataset.loginStatusUrl || "/api/login/status", {
           cache: "no-store",
           credentials: "same-origin",
           headers: { Accept: "application/json" },
@@ -295,7 +295,7 @@
         if (!response.ok) throw new Error("status request failed");
         const state = await response.json();
         const status = applyLoginState(state);
-        if (status === "success") {
+        if (status === "success" || (loginPanel.dataset.loginStatusUrl && !active.has(status))) {
           setTimeout(() => {
             window.location.href = loginPanel.dataset.loginReturn || "/settings";
           }, 700);

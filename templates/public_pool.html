@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共享账号池 · WeRSS</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js?v={{ app_version }}-pool" defer></script>
+</head>
+<body>
+<main class="shell" id="main-content">
+  <section class="page-heading heading-with-action">
+    <div><h1>共享账号池</h1><p>扫码授权后，WechRSS 可使用该微信读书会话同步公众号文章列表。</p></div>
+    {% if show_feeds %}<a class="button" href="/">公开订阅</a>{% else %}<a class="button" href="/admin">管理员入口</a>{% endif %}
+  </section>
+
+  {% if paused %}<p class="inline-alert warn" role="status">平台请求受限，文章自动同步已暂停。</p>{% endif %}
+  {% if busy %}<p class="inline-alert warn" role="status">扫码请求繁忙，请稍后重试。</p>{% endif %}
+  <section class="card form-card library-section" aria-label="授权账号"
+           data-login-panel data-login-poll="{{ '1' if login.status in states else '0' }}"
+           data-login-return="/account-pool" data-login-status-url="/account-pool/status">
+    {% set titles = {
+      'idle': '扫码加入', 'requesting': '正在生成二维码', 'waiting': '等待微信扫码',
+      'scanned': '已扫码，请在手机上确认', 'exchanging': '正在连接微信读书',
+      'initializing': '正在连接微信读书', 'success': '已加入共享账号池',
+      'cancelled': '扫码已取消', 'expired': '二维码已过期', 'declined': '微信端拒绝了登录',
+      'error': '登录未完成，请稍后重试'
+    } %}
+    <h2 id="login-title" aria-live="polite">{{ titles.get(login.status, '扫码加入') }}</h2>
+    <div id="qr-wrap" class="qr-wrap" {% if not login.qr %}hidden{% endif %}>
+      <img id="qr-image" {% if login.qr %}src="{{ login.qr }}"{% endif %} alt="本次微信读书登录二维码">
+    </div>
+    {% if login.status in states %}
+    <form method="post" action="/account-pool">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="button" name="action" value="cancel">取消扫码</button>
+    </form>
+    {% else %}
+    <form method="post" action="/account-pool" data-loading-form data-loading-label="生成中…">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="start">
+      <p><label class="library-consent"><input type="checkbox" name="consent" value="1" required>我同意此服务保存我的微信读书登录凭证，并将该会话用于共享同步。我可以在当前浏览器撤回授权。</label></p>
+      <button class="button primary" type="submit">生成微信登录二维码</button>
+    </form>
+    {% endif %}
+    <p class="field-help">请使用自己的微信扫码。如嵌入页面无法登录，<a href="/account-pool" target="_blank" rel="noopener">在独立标签页打开</a>。</p>
+  </section>
+
+  {% set labels = {'valid': '有效', 'pending': '待验证', 'expired': '已失效'} %}
+  <section class="card form-card library-section" aria-label="账号验证状态">
+    <h2>账号验证状态</h2>
+    <p>{{ counts.valid }} 个有效 · {{ counts.pending }} 个待验证 · {{ counts.expired }} 个已失效</p>
+    <p class="field-help">有效表示最近一次扫码或同步成功。系统在实际请求时更新状态。</p>
+    {% for account in accounts %}
+    <div class="setting-row">
+      <div><strong>账号 {{ account.id }}{% if account.owned %} · 你已授权{% endif %}</strong>
+        <p>{{ labels[account.state] }}{% if account.checked_at %} · {{ fmt_relative_ts(account.checked_at) }}{% endif %}</p>
+      </div>
+      {% if account.owned %}
+      <form method="post" action="/account-pool" data-confirm="撤回这个账号对共享同步的授权？">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="id" value="{{ account.id }}">
+        <button class="button" name="action" value="revoke">撤回授权</button>
+      </form>
+      {% endif %}
+    </div>
+    {% else %}
+    <p>暂时没有已加入的账号。</p>
+    {% endfor %}
+    {% if pages > 1 %}
+    <nav class="library-actions" aria-label="账号分页">
+      {% if page > 1 %}<a class="button" href="?page={{ page - 1 }}">上一页</a>{% endif %}
+      <span>第 {{ page }} / {{ pages }} 页</span>
+      {% if page < pages %}<a class="button" href="?page={{ page + 1 }}">下一页</a>{% endif %}
+    </nav>
+    {% endif %}
+  </section>
+</main>
+<div class="toast" role="status"></div>
+</body>
+</html>

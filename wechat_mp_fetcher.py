@@ -274,7 +274,7 @@ class WeReadMobileClient:
     def _get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         self.limiter.wait()
         response = self.session.get(MOBILE_BASE + path, params=params, timeout=self.timeout)
-        if response.status_code in {401, 403}:
+        if response.status_code == 401:
             raise AuthExpiredError(f"HTTP {response.status_code}: 登录状态可能已失效")
         if response.status_code == 429:
             raise RiskControlError("HTTP 429: 请求过于频繁")
@@ -288,6 +288,8 @@ class WeReadMobileClient:
             payload = None
 
         # WeRead also reports business failures in JSON bodies, sometimes with HTTP 200.
+        if response.status_code == 403 and (payload is None or _extract_err(payload)[0] != -2012):
+            raise RiskControlError("HTTP 403: 微信读书拒绝访问，请检查账号状态")
         if payload is not None:
             check_weread_error(payload)
 

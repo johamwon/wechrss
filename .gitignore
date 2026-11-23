@@ -10,5 +10,7 @@ dist/
 *.egg-info/
 data/
 credentials.json
+*.pool.json
+*.pool.json.*.tmp
 .env
 *.pyc

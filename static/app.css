@@ -77,6 +77,8 @@
 .library-members { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 9px; margin: 0 0 16px; padding: 12px; min-width: 0; }
 .library-members label { display: flex; align-items: start; gap: 8px; }
 .library-members input[type="checkbox"] { width: 18px; height: 18px; margin: 3px 0 0; flex-shrink: 0; accent-color: var(--green); }
+.library-consent { display: flex; gap: 8px; align-items: start; }
+.library-consent input[type="checkbox"] { width: 18px; height: 18px; margin: 3px 0 0; flex: 0 0 18px; accent-color: var(--green); }
 .library-section input:not([type="checkbox"]):not([type="hidden"]) { background: var(--panel-soft); }
 .library-section textarea { width: 100%; padding: 9px 11px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel-soft); color: var(--text); font: inherit; }
 .library-bookmark { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }

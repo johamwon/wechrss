@@ -15,5 +15,5 @@ if str(ROOT) not in sys.path:
 @pytest.fixture(autouse=True)
 def isolated_runtime_environment(monkeypatch):
     for key in ("WEREAD_ACCESS_TOKEN", "WEREAD_VID", "WEREAD_REFRESH_TOKEN", "WEREAD_DEVICE_ID",
-                "ADMIN_PASSWORD", "PUBLIC_BASE_URL"):
+                "ADMIN_PASSWORD", "PUBLIC_BASE_URL", "WEREAD_ACCOUNT_POOL", "WECHAT_MP_PUBLIC_FEEDS"):
         monkeypatch.delenv(key, raising=False)
