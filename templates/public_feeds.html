@@ -4,20 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ '公众号互助订阅' if show_pool else '公开订阅' }} · WeRSS</title>
+  <meta name="description" content="{{ '共同补充公众号目录，轮换有效会话同步，任何访客都可订阅共享 RSS。' if show_pool else '查看已经公开的微信公众号 RSS 订阅。' }}">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/app.css?v={{ app_version }}-community-home">
   <script src="/static/app.js?v={{ app_version }}-community" defer></script>
 </head>
 <body>
-<main class="shell" id="main-content">
-  <section class="page-heading heading-with-action">
-    <div><h1>{{ '公众号互助订阅' if show_pool else '公众号公开订阅' }}</h1>
-      <p>{{ '扫码贡献账号后即可添加公众号。共享目录里的 RSS 地址可直接订阅。' if show_pool else '将 RSS 链接添加到阅读器，查看已同步的文章。' }}</p>
+<a class="skip-link" href="#main-content">跳到主要内容</a>
+<header class="shell community-nav">
+  <a class="community-brand" href="{{ catalog_path }}">WechRSS</a>
+  <nav aria-label="页面导航">
+    {% if show_pool %}<a href="/account-pool">账号池状态</a>{% endif %}
+    <a href="/admin/login">管理员入口</a>
+  </nav>
+</header>
+<main class="shell community-main" id="main-content">
+  <section class="community-hero{% if not show_pool %} community-hero-compact{% endif %}" aria-labelledby="community-title">
+    <div>
+      <h1 id="community-title">{{ '公众号互助订阅' if show_pool else '公众号公开订阅' }}</h1>
+      <p class="community-intro">{{ '用熟悉的 RSS 阅读器跟进公众号更新。你可以从目录选择公众号，也可以扫码授权，帮大家补充想读的公众号。' if show_pool else '从目录复制公众号的 RSS 地址，添加到你的阅读器。' }}</p>
+      <div class="community-buttons">
+        <a class="button primary" href="#shared-directory">浏览共享目录</a>
+        {% if contributor %}<a class="button" href="#submit-source">添加公众号</a>
+        {% elif show_pool %}<a class="button" href="/account-pool">扫码参与互助</a>{% endif %}
+      </div>
     </div>
-    <nav class="library-actions" aria-label="平台入口">
-      {% if show_pool %}<a class="button" href="/account-pool">{{ '查看账号池' if contributor else '扫码加入账号池' }}</a>{% endif %}
-      <a class="button" href="/admin/login">管理员入口</a>
-    </nav>
+    {% if show_pool %}
+    <dl class="community-roles">
+      <div><dt>阅读者</dt><dd>免登录复制 RSS，在自己的阅读器里查看更新。</dd></div>
+      <div><dt>参与者</dt><dd>用自己的微信扫码，粘贴公开文章链接来添加公众号。</dd></div>
+      <div><dt>后台同步</dt><dd>系统轮流使用有效的微信读书会话，维护每个公众号的 Feed。</dd></div>
+    </dl>
+    {% endif %}
   </section>
   {% if paused %}<p class="inline-alert warn" role="status">平台暂时限制同步。你仍可添加公众号或订阅 RSS，恢复后系统会继续获取文章。</p>{% endif %}
   {% if added %}
@@ -28,7 +46,7 @@
   </p>
   {% endif %}
   {% if contributor %}
-  <form class="card form-card library-section" method="post" action="/community" data-loading-form data-loading-label="识别中…">
+  <form class="card form-card library-section" id="submit-source" method="post" action="/community" data-loading-form data-loading-label="识别中…">
     <h2>添加公众号</h2>
     {% if error %}<p class="inline-alert warn" role="alert">{{ error }}</p>{% endif %}
     <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -41,7 +59,7 @@
     <button class="button primary" type="submit">添加到共享目录</button>
   </form>
   {% endif %}
-  <section class="card form-card" aria-label="公开订阅列表">
+  <section class="card form-card" id="shared-directory" aria-label="公开订阅列表">
     <h2>共享订阅目录</h2>
     {% for source in sources %}
     <div class="setting-row">
@@ -55,7 +73,7 @@
       </div>
     </div>
     {% else %}
-    <p>暂时没有公开订阅。</p>
+    <p class="community-empty">{{ '目录还没有公众号。已参与互助的用户可以添加第一条共享订阅。' if show_pool else '暂时没有公开订阅。' }}</p>
     {% endfor %}
     {% if page > 1 or has_next %}
     <nav class="library-actions" aria-label="订阅分页">
@@ -65,6 +83,11 @@
     </nav>
     {% endif %}
   </section>
+  {% if show_pool %}
+  <footer class="community-footer">
+    <p>RSS 提供标题、摘要和原文链接。你可以在<a href="/account-pool">账号池</a>查看匿名会话状态，并在原浏览器撤回自己的授权。</p>
+  </footer>
+  {% endif %}
 </main>
 <div class="toast" role="status"></div>
 </body>

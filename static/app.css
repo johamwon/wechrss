@@ -82,6 +82,44 @@
 .library-section input:not([type="checkbox"]):not([type="hidden"]) { background: var(--panel-soft); }
 .library-section textarea { width: 100%; padding: 9px 11px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel-soft); color: var(--text); font: inherit; }
 .library-bookmark { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+.community-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  padding-block: 18px;
+}
+.community-nav nav, .community-buttons { display: flex; flex-wrap: wrap; gap: 10px 16px; }
+.community-nav nav a { color: var(--text-soft); font-size: 14px; }
+.community-brand { color: var(--green-dark); font-size: 21px; font-weight: 750; text-decoration: none; }
+.community-main { padding-bottom: 42px; }
+.community-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(24px, 5vw, 64px);
+  margin-bottom: 22px;
+  padding: clamp(22px, 4.5vw, 54px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--green-softer);
+}
+.community-hero-compact { grid-template-columns: minmax(0, 1fr); }
+.community-hero h1 { margin: 0; font-size: clamp(30px, 4.8vw, 54px); line-height: 1.18; letter-spacing: -.04em; }
+.community-intro { max-width: 35em; margin: 14px 0 20px; color: var(--text-soft); font-size: clamp(15px, 1.4vw, 18px); line-height: 1.65; }
+.community-buttons { gap: 10px; }
+.community-roles { min-width: 0; margin: 0; padding: 0 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.community-roles > div { padding: 12px 0; }
+.community-roles > div + div { border-top: 1px solid var(--line); }
+.community-roles dt { color: var(--green-dark); font-weight: 700; }
+.community-roles dd { margin: 3px 0 0; color: var(--text-soft); font-size: 14px; }
+.community-main :is(#submit-source, #shared-directory) { scroll-margin-top: 16px; }
+.community-footer, .community-empty { color: var(--muted); }
+.community-footer { margin-top: 22px; font-size: 14px; }
+@media (max-width: 720px) {
+  .community-hero { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
 .feed-setup .advanced { margin-top: 18px; }
 .onboarding-body p, .diagnostic li, .health-alert p { overflow-wrap: anywhere; }
 @media (max-width: 680px) {
