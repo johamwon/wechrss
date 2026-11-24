@@ -183,7 +183,7 @@ BIND_ADDRESS=0.0.0.0
 ADMIN_PASSWORD=换成足够强的密码
 ```
 
-浏览器可在 `/admin/login` 登录，用户名为 `admin`，密码为 `ADMIN_PASSWORD`。在魔搭创空间中，请在独立标签页打开登录页。敏感凭证保存在 `data/credentials.json`，该文件已被 Git 忽略，但仍应限制访问权限并安全备份。
+浏览器可在 `/admin/login` 登录，用户名为 `admin`，密码为 `ADMIN_PASSWORD`。若希望在魔搭内嵌预览中登录，请在 `ALLOWED_FRAME_ANCESTORS` 中填写受信任的 HTTPS 来源。管理端只接受显式的 HTTPS 来源，并使用分区 Cookie 保存登录会话。敏感凭证保存在 `data/credentials.json`，该文件已被 Git 忽略，但仍应限制访问权限并安全备份。
 
 <a id="configuration"></a>
 

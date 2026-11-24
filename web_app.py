@@ -162,11 +162,8 @@ class WebApp:
             return bool(source and source.feed_token and hmac.compare_digest(token.encode(), source.feed_token.encode()))
         if not self.admin_password:
             return True
-        secure, local = self._browser_transport(environ)
-        if secure or local:
-            token = self._browser_cookie(environ, "werss_admin", secure)
-            if self.admin_login.authenticated(token, self.admin_password):
-                return True
+        if self._browser_admin(environ):
+            return True
         header = environ.get("HTTP_AUTHORIZATION", "")
         if not header.startswith("Basic "):
             return False
@@ -341,10 +338,35 @@ class WebApp:
         return cookie.value if cookie and re.fullmatch(r"[A-Za-z0-9_-]{43}", cookie.value) else ""
 
     @staticmethod
-    def _cookie_header(name: str, value: str, secure: bool, max_age: int) -> tuple[str, str]:
+    def _cookie_header(
+        name: str, value: str, secure: bool, max_age: int, *, partitioned: bool = False,
+    ) -> tuple[str, str]:
         name = ("__Host-" if secure else "") + name
-        return ("Set-Cookie", f"{name}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax"
-                + ("; Secure" if secure else ""))
+        attributes = "SameSite=None; Secure; Partitioned" if secure and partitioned else "SameSite=Lax"
+        if secure and not partitioned:
+            attributes += "; Secure"
+        return ("Set-Cookie", f"{name}={value}; Path=/; Max-Age={max_age}; HttpOnly; {attributes}")
+
+    @staticmethod
+    def _admin_frame_ancestors() -> str:
+        # Privileged pages may only be embedded by explicitly configured HTTPS origins.
+        return " ".join(
+            origin for origin in ALLOWED_FRAME_ANCESTORS.split()
+            if re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?", origin)
+        )
+
+    def _admin_cookie_names(self, secure: bool) -> tuple[str, str, bool]:
+        if secure and self._admin_frame_ancestors():
+            return "werss_admin_frame", "werss_admin_frame_login", True
+        return "werss_admin", "werss_admin_login", False
+
+    def _browser_admin(self, environ) -> bool:
+        secure, local = self._browser_transport(environ)
+        if not (self.admin_password and (secure or local)):
+            return False
+        session_cookie, _, _ = self._admin_cookie_names(secure)
+        token = self._browser_cookie(environ, session_cookie, secure)
+        return self.admin_login.authenticated(token, self.admin_password)
 
     def _admin_sign_in(self, environ, start_response, method):
         secure, local = self._browser_transport(environ)
@@ -355,7 +377,8 @@ class WebApp:
         def private_response(status, response_headers):
             return start_response(status, response_headers + headers)
 
-        nonce = self._browser_cookie(environ, "werss_admin_login", secure)
+        session_cookie, challenge_cookie, partitioned = self._admin_cookie_names(secure)
+        nonce = self._browser_cookie(environ, challenge_cookie, secure)
         status = "200 OK"
         error = ""
         if method == "POST":
@@ -370,9 +393,11 @@ class WebApp:
                     form.get("username", ""), form.get("password", ""), self.admin_password
                 )
                 if token:
-                    previous = self._browser_cookie(environ, "werss_admin", secure)
+                    previous = self._browser_cookie(environ, session_cookie, secure)
                     self.admin_login.sign_out(previous)
-                    headers.append(self._cookie_header("werss_admin", token, secure, self.admin_login.max_age))
+                    headers.append(self._cookie_header(
+                        session_cookie, token, secure, self.admin_login.max_age, partitioned=partitioned,
+                    ))
                     return self._redirect(private_response, "/admin")
                 if issue == "limited":
                     status = "429 Too Many Requests"
@@ -386,7 +411,7 @@ class WebApp:
 
         if not nonce:
             nonce = secrets.token_urlsafe(32)
-            headers.append(self._cookie_header("werss_admin_login", nonce, secure, 600))
+            headers.append(self._cookie_header(challenge_cookie, nonce, secure, 600, partitioned=partitioned))
         page = self.env.get_template("admin_login.html").render(
             csrf=self.admin_login.challenge(nonce), error=error, show_public=bool(self.public_login or self.public_feeds)
         )
@@ -445,17 +470,16 @@ class WebApp:
 
         def secure_start_response(status, headers, exc_info=None):
             names = {name.lower() for name, _ in headers}
-            frame_ancestors = ALLOWED_FRAME_ANCESTORS or "'none'"
-            login_page = environ.get("PATH_INFO") == "/admin/login"
-            if login_page:
-                frame_ancestors = "'none'"
+            admin_page = environ.get("PATH_INFO") == "/admin/login" or self._browser_admin(environ)
+            allowed_frames = self._admin_frame_ancestors() if admin_page else ALLOWED_FRAME_ANCESTORS
+            frame_ancestors = allowed_frames or "'none'"
             common = [
                 ("X-Content-Type-Options", "nosniff"),
                 ("Referrer-Policy", "same-origin"),
                 ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
                 ("Content-Security-Policy", "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors %s; base-uri 'self'; form-action 'self'" % frame_ancestors),
             ]
-            if login_page or not ALLOWED_FRAME_ANCESTORS:
+            if not allowed_frames:
                 # 未显式放行时保留 X-Frame-Options 兜底（旧浏览器不支持 frame-ancestors）
                 common.append(("X-Frame-Options", "DENY"))
             if (self.public_feeds or self.public_login) and environ.get("PATH_INFO", "/") == "/":
@@ -490,10 +514,11 @@ class WebApp:
             if path == "/admin/logout" and method == "POST" and self.admin_password:
                 self._require_csrf(self._form(environ))
                 secure, _ = self._browser_transport(environ)
-                self.admin_login.sign_out(self._browser_cookie(environ, "werss_admin", secure))
+                session_cookie, _, partitioned = self._admin_cookie_names(secure)
+                self.admin_login.sign_out(self._browser_cookie(environ, session_cookie, secure))
                 start_response("303 See Other", [
                     ("Location", "/admin/login"), ("Cache-Control", "no-store"), ("Content-Length", "0"),
-                    self._cookie_header("werss_admin", "", secure, 0),
+                    self._cookie_header(session_cookie, "", secure, 0, partitioned=partitioned),
                 ])
                 return [b""]
             if public_pool:
@@ -535,13 +560,10 @@ class WebApp:
 
             if path in {"/", "/admin"} and method == "GET":
                 sources = self.db.list_sources()
-                secure, local = self._browser_transport(environ)
                 return self._render(
                     start_response, "dashboard.html",
                     sources=sources, runs=self.db.recent_runs(limit=12),
-                    browser_admin=(secure or local) and self.admin_login.authenticated(
-                        self._browser_cookie(environ, "werss_admin", secure), self.admin_password
-                    ),
+                    browser_admin=self._browser_admin(environ),
                     feed_urls={s.id: self._feed_url(s, environ) for s in sources},
                     message=query.get("message", ""), error=query.get("error", ""), base_url=self._base_url(environ),
                 )
