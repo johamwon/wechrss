@@ -12,7 +12,7 @@
 <main class="shell" id="main-content">
   <section class="page-heading heading-with-action">
     <div><h1>共享账号池</h1><p>扫码授权后，WechRSS 可使用该微信读书会话同步公众号文章列表。</p></div>
-    {% if show_feeds %}<a class="button" href="/">公开订阅</a>{% else %}<a class="button" href="/admin/login">管理员入口</a>{% endif %}
+    <a class="button primary" href="/community">互助订阅目录</a>
   </section>
 
   {% if paused %}<p class="inline-alert warn" role="status">平台请求受限，文章自动同步已暂停。</p>{% endif %}
@@ -28,6 +28,7 @@
       'error': '登录未完成，请稍后重试'
     } %}
     <h2 id="login-title" aria-live="polite">{{ titles.get(login.status, '扫码加入') }}</h2>
+    {% if login.status == 'success' %}<p><a class="button primary" href="/community">去添加公众号</a></p>{% endif %}
     <div id="qr-wrap" class="qr-wrap" {% if not login.qr %}hidden{% endif %}>
       <img id="qr-image" {% if login.qr %}src="{{ login.qr }}"{% endif %} alt="本次微信读书登录二维码">
     </div>

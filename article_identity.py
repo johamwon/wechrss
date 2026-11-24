@@ -5,7 +5,7 @@ import html as html_lib
 import re
 from dataclasses import asdict, dataclass
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -75,6 +75,55 @@ def biz_from_url(url: str) -> str:
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
     return str((query.get("__biz") or query.get("biz") or [""])[0]).strip()
+
+
+def resolve_community_article(url: str, *, session: requests.Session | None = None) -> ArticleIdentity:
+    """Resolve a public submission without following off-site redirects or running its scripts."""
+    def checked(value: str) -> str:
+        if len(value) > 4096 or re.search(r"[\s\\]", value):
+            raise ArticleIdentityError("请填写有效的微信文章链接")
+        parsed = urlparse(value)
+        if (parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "mp.weixin.qq.com"
+                or parsed.params or not re.fullmatch(r"/s(?:/[A-Za-z0-9_-]+)?/?", parsed.path)):
+            raise ArticleIdentityError("请粘贴 mp.weixin.qq.com 的公众号文章链接")
+        return urlunparse(parsed._replace(scheme="https", netloc="mp.weixin.qq.com", fragment=""))
+
+    original = checked(url.strip())
+    current = original
+    try:
+        for _ in range(3):
+            biz = biz_from_url(current)
+            if biz:
+                bid = decode_biz(biz)
+                if not re.fullmatch(r"[0-9]{1,24}", bid):
+                    raise ArticleIdentityError("链接没有有效的公众号 ID")
+                return ArticleIdentity(original, current, biz, bid, f"MP_WXS_{bid}", method="url-query")
+            if not re.fullmatch(r"/s/[A-Za-z0-9_-]+/?", urlparse(current).path):
+                raise ArticleIdentityError("链接缺少公众号标识，请从微信文章菜单重新复制链接")
+            requester = session or requests
+            with requester.get(current, headers={"User-Agent": BROWSER_UA}, timeout=(3, 5),
+                               allow_redirects=False, stream=True) as response:
+                if response.is_redirect:
+                    current = checked(urljoin(current, response.headers["Location"]))
+                    continue
+                if response.status_code in {403, 429}:
+                    raise ArticleIdentityError("微信暂时限制链接识别，请稍后重试")
+                response.raise_for_status()
+                body = bytearray()
+                for chunk in response.iter_content(chunk_size=16384):
+                    body.extend(chunk)
+                    if len(body) > 512 * 1024:
+                        break
+                html_text = body.decode("utf-8", errors="replace")
+                if any(marker in html_text for marker in _BLOCK_MARKERS):
+                    raise ArticleIdentityError("微信文章页要求人工验证，请稍后重试")
+                identity = extract_identity_from_html(html_text, original, current)
+                if identity and re.fullmatch(r"[0-9]{1,24}", identity.bid):
+                    return identity
+                break
+    except (requests.RequestException, ValueError) as exc:
+        raise ArticleIdentityError("无法识别这篇文章，请核对链接后重试") from exc
+    raise ArticleIdentityError("未找到公众号，请换一篇公开文章的链接")
 
 
 def _clean_js_string(value: str) -> str:

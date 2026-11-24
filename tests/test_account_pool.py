@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import re
 import threading
@@ -8,6 +9,7 @@ from urllib.parse import urlencode
 import pytest
 import requests
 
+from article_identity import ArticleIdentityError, resolve_community_article
 from service import AppDB, CredentialStore, Scheduler, SyncService
 from test_auth import FakeResponse, InstantAuth
 from test_web import call_wsgi
@@ -308,3 +310,106 @@ def test_public_login_throttles_new_qr_sessions(setup_pool, monkeypatch):
     app.public_login._last_start = time.monotonic() - 3
     assert app.public_login.start("second")
     app.public_login._sessions["second"].manager._thread.join(2)
+
+
+def test_contributor_adds_shared_source_and_visitor_gets_its_feed(setup_pool, monkeypatch):
+    service, private = setup_pool
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-test")
+    app = WebApp(service.db, service.credentials, service, Scheduler(service.db, service))
+    https = {"wsgi.url_scheme": "https"}
+    meta, guest = call_wsgi(app, "/", environ_overrides=https)
+    assert "公众号互助订阅".encode() in guest and b'id="community-source"' not in guest
+    assert private.name.encode() not in guest
+    assert call_wsgi(app, f"/public-feeds/{private.id}.xml", environ_overrides=https)[0]["status"].startswith("404")
+
+    session = meta["headers"]["Set-Cookie"].split(";", 1)[0]
+    identity = hashlib.sha256(session.split("=", 1)[1].encode()).hexdigest()
+    visitor = {**https, "HTTP_COOKIE": session}
+    link = "https://mp.weixin.qq.com/s?" + urlencode({"__biz": base64.b64encode(b"4567").decode(), "mid": 1})
+    payload = urlencode({"source": link, "csrf": app.csrf_token}).encode()
+    assert call_wsgi(app, "/community", "POST", payload, visitor)[0]["status"].startswith("403")
+    service.save_credentials(WeReadCredentials(vid="303", accessToken="contributor-token"), owner=identity)
+    _, member = call_wsgi(app, "/community", environ_overrides=visitor)
+    assert b'id="community-source"' in member
+    assert b"contributor-token" not in member
+    csrf = re.search(rb'name="csrf" value="([a-f0-9]+)"', member)[1].decode()
+    payload = urlencode({"source": link, "csrf": csrf}).encode()
+    assert call_wsgi(app, "/community", "POST", payload, https)[0]["status"].startswith("403")
+    added, _ = call_wsgi(app, "/community", "POST", payload, visitor)
+    assert added["status"].startswith("303")
+    shared, = service.db.list_sources(community_only=True)
+    assert added["headers"]["Location"] == f"/community?added={shared.id}"
+    assert shared.book_id == "MP_WXS_4567"
+    service._last_community_request = time.monotonic() - 3
+    again, _ = call_wsgi(app, "/community", "POST", payload, visitor)
+    assert again["headers"]["Location"] == added["headers"]["Location"]
+
+    class Client:
+        def get_articles(self, book_id, **kwargs):
+            return [Article("community-article", book_id, "Shared story", content_html="hidden-body",
+                            author="Shared account")]
+
+    monkeypatch.setattr(service, "_client_for", lambda _: Client())
+    assert service.sync_source(shared.id).status == "ok"
+    assert service.db.get_source(shared.id).name == "Shared account"
+    path = f"/public-feeds/{shared.id}.xml"
+    meta, xml = call_wsgi(app, path)
+    assert meta["status"].startswith("200")
+    assert b"Shared story" in xml and b"hidden-body" not in xml
+    assert call_wsgi(app, path, "HEAD")[1] == b""
+    _, catalog = call_wsgi(app, "/community", environ_overrides=https)
+    assert path.encode() in catalog and private.name.encode() not in catalog
+    assert call_wsgi(app, "/sources/new", environ_overrides=visitor)[0]["status"].startswith("401")
+    private_feed = f"/public-feeds/{private.id}.xml"
+    share_route = f"/sources/{private.id}/sharing"
+    auth = {"HTTP_AUTHORIZATION": "Basic " + base64.b64encode(b"admin:admin-test").decode()}
+    for shared_value, expected in (("1", "200"), ("0", "404")):
+        form = urlencode({"csrf": app.csrf_token, "shared": shared_value}).encode()
+        assert call_wsgi(app, share_route, "POST", form, visitor)[0]["status"].startswith("401")
+        assert call_wsgi(app, share_route, "POST", form, auth)[0]["status"].startswith("303")
+        assert call_wsgi(app, private_feed)[0]["status"].startswith(expected)
+
+
+def test_valid_pool_accounts_rotate_on_successive_syncs(setup_pool, monkeypatch):
+    service, source = setup_pool
+    for vid in ("101", "202"):
+        service.pool.mark(vid, "valid")
+    calls = []
+
+    class Client:
+        def get_articles(self, *args, **kwargs):
+            return []
+
+    def get_client(record):
+        calls.append(record.vid)
+        return Client()
+
+    monkeypatch.setattr(service, "_client_for", get_client)
+    for _ in range(4):
+        assert service.sync_source(source.id).status == "ok"
+    assert calls == ["101", "202", "101", "202"]
+
+
+def test_shared_article_lookup_only_follows_wechat_article_redirects():
+    class Redirect:
+        is_redirect = True
+        headers = {"Location": "https://untrusted.example/s/injected"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    class Session:
+        calls = []
+
+        def get(self, url, **kwargs):
+            self.calls.append(url)
+            assert not kwargs["allow_redirects"]
+            return Redirect()
+
+    session = Session()
+    with pytest.raises(ArticleIdentityError, match="mp.weixin.qq.com"):
+        resolve_community_article("https://mp.weixin.qq.com/s/public-link", session=session)
+    assert session.calls == ["https://mp.weixin.qq.com/s/public-link"]

@@ -417,6 +417,20 @@ class WebApp:
         )
         return self._text(private_response, page, status, "text/html; charset=utf-8")
 
+    def _visitor_owner(self, environ, headers, *, create: bool) -> str:
+        secure, local = self._browser_transport(environ)
+        if not (secure or local):
+            return ""
+        visitor = self._browser_cookie(environ, "werss_pool", secure)
+        if not visitor:
+            partitioned = bool(secure and self._admin_frame_ancestors())
+            name = "werss_pool_frame" if partitioned else "werss_pool"
+            visitor = self._browser_cookie(environ, name, secure)
+            if not visitor and create:
+                visitor = secrets.token_urlsafe(32)
+                headers.append(self._cookie_header(name, visitor, secure, 31536000, partitioned=partitioned))
+        return hashlib.sha256(visitor.encode()).hexdigest() if visitor else ""
+
     def _public_pool(self, environ, start_response, path, method, query):
         if path == "/account-pool/status" and method != "GET":
             return self._text(start_response, "Method not allowed", "405 Method Not Allowed")
@@ -427,16 +441,12 @@ class WebApp:
         if not secure and not loopback:
             return self._text(start_response, "请通过 HTTPS 访问共享账号池", "403 Forbidden")
 
-        visitor = self._browser_cookie(environ, "werss_pool", secure)
         headers = [("Cache-Control", "no-store")]
-        if not visitor and path == "/account-pool" and method == "GET":
-            visitor = secrets.token_urlsafe(32)
-            headers.append(self._cookie_header("werss_pool", visitor, secure, 31536000))
+        owner = self._visitor_owner(environ, headers, create=path == "/account-pool" and method == "GET")
 
         def private_response(status, response_headers):
             return start_response(status, response_headers + headers)
 
-        owner = hashlib.sha256(visitor.encode()).hexdigest() if visitor else ""
         csrf = hmac.new(self.csrf_token.encode(), ("pool:" + owner).encode(), "sha256").hexdigest()
         if path == "/account-pool/status":
             return self._json(private_response, self.public_login.status(owner))
@@ -461,9 +471,48 @@ class WebApp:
         html = self.env.get_template("public_pool.html").render(
             **overview, login=self.public_login.status(owner), states=LoginManager.ACTIVE,
             paused=self.service.account_issue() == "risk_control", busy=query.get("busy") == "1",
-            csrf=csrf, show_feeds=self.public_feeds,
+            csrf=csrf,
         )
         return self._text(private_response, html, content_type="text/html; charset=utf-8")
+
+    def _community(self, environ, start_response, method, query):
+        if method not in {"GET", "POST"}:
+            return self._text(start_response, "Method not allowed", "405 Method Not Allowed")
+        headers = [("Cache-Control", "no-store")]
+        owner = self._visitor_owner(environ, headers, create=bool(self.public_login) and method == "GET")
+        csrf = hmac.new(self.csrf_token.encode(), ("community:" + owner).encode(), "sha256").hexdigest()
+
+        def private_response(status, response_headers):
+            return start_response(status, response_headers + headers)
+
+        contributor = bool(self.public_login and self.service.pool.contributor(owner))
+        value, error, status = "", "", "200 OK"
+        if method == "POST":
+            form = self._form(environ)
+            if not contributor or not hmac.compare_digest(form.get("csrf", "").encode(), csrf.encode()):
+                return self._text(private_response, "请在当前浏览器扫码加入账号池，再打开互助目录添加公众号", "403 Forbidden")
+            value = form.get("source", "").strip()
+            try:
+                source = self.service.add_community_source(value, owner)
+            except FetcherError as exc:
+                error, status = str(exc), "400 Bad Request"
+            else:
+                return self._redirect(private_response, f"/community?added={source.id}")
+
+        raw_page = query.get("page", "")
+        page = max(1, int(raw_page)) if re.fullmatch(r"[0-9]{1,5}", raw_page) else 1
+        sources = self.db.list_sources(community_only=not self.public_feeds, limit=51, offset=(page - 1) * 50)
+        added_id = query.get("added", "")
+        added = (self.db.get_source(int(added_id), community_only=True)
+                 if re.fullmatch(r"[0-9]{1,18}", added_id) else None)
+        paused = self.service.account_issue() == "risk_control" if self.public_login else False
+        html = self.env.get_template("public_feeds.html").render(
+            sources=sources[:50], has_next=len(sources) > 50, page=page, added=added,
+            base_url=self._feed_base_url(environ), show_pool=bool(self.public_login),
+            contributor=contributor, csrf=csrf, value=value, error=error, paused=paused,
+            catalog_path="/community" if self.public_login else "/",
+        )
+        return self._text(private_response, html, status, "text/html; charset=utf-8")
 
     def __call__(self, environ, start_response):
         original_start_response = start_response
@@ -496,12 +545,13 @@ class WebApp:
             return self._admin_sign_in(environ, start_response, method)
         authorized = self._authorized(environ)
         public_index = (self.public_feeds or self.public_login) and not authorized and method == "GET" and path == "/"
+        community = self.public_login is not None and path == "/community"
         public_feed = (re.fullmatch(r"/public-feeds/([0-9]{1,18})\.xml", path)
-                       if self.public_feeds and method in {"GET", "HEAD"} else None)
+                       if (self.public_feeds or self.public_login) and method in {"GET", "HEAD"} else None)
         public_pool = self.public_login is not None and path in {"/account-pool", "/account-pool/status"}
         public_asset = ((self.admin_password or self.public_feeds or self.public_login) and method == "GET"
                         and path in {"/static/app.css", "/static/favicon.svg", "/static/app.js"})
-        if not (authorized or public_index or public_feed or public_pool or public_asset):
+        if not (authorized or public_index or community or public_feed or public_pool or public_asset):
             if method == "GET" and self.admin_password and "text/html" in environ.get("HTTP_ACCEPT", ""):
                 if path in {"/", "/admin", "/settings", "/onboarding"}:
                     return self._redirect(start_response, "/admin/login")
@@ -523,15 +573,10 @@ class WebApp:
                 return [b""]
             if public_pool:
                 return self._public_pool(environ, start_response, path, method, query)
-            if public_index:
-                if not self.public_feeds:
-                    return self._redirect(start_response, "/account-pool")
-                page = self.env.get_template("public_feeds.html").render(
-                    sources=self.db.list_sources(), base_url=self._feed_base_url(environ), show_pool=bool(self.public_login)
-                )
-                return self._text(start_response, page, content_type="text/html; charset=utf-8")
+            if public_index or community:
+                return self._community(environ, start_response, method, query)
             if public_feed:
-                source = self.db.get_source(int(public_feed.group(1)))
+                source = self.db.get_source(int(public_feed.group(1)), community_only=not self.public_feeds)
                 if not source:
                     return self._text(start_response, "Feed not found", "404 Not Found")
                 articles = [
@@ -669,6 +714,16 @@ class WebApp:
                 target = "/onboarding" if form.get("next") == "onboarding" else f"/sources/{src.id}"
                 return self._redirect(start_response, target + "?message=" + quote(message))
 
+            share = re.fullmatch(r"/sources/([0-9]{1,18})/sharing", path)
+            if share and method == "POST" and self.public_login is not None:
+                form = self._form(environ)
+                self._require_csrf(form)
+                source_id = int(share.group(1))
+                if not self.db.get_source(source_id):
+                    return self._text(start_response, "公众号不存在", "404 Not Found")
+                self.db.set_source_shared(source_id, form.get("shared") == "1")
+                return self._redirect(start_response, f"/sources/{source_id}")
+
             m = re.fullmatch(r"/sources/(\d+)", path)
             if m and method == "GET":
                 source_id = int(m.group(1)); source = self.db.get_source(source_id)
@@ -680,6 +735,9 @@ class WebApp:
                     runs=self.db.recent_runs(source_id, 20), message=query.get("message", ""), error=query.get("error", ""),
                     **self._feed_context(source, environ, query.get("reader", "local")),
                     filter_rules=self.db.get_filter_rules(source_id),
+                    community_enabled=self.public_login is not None,
+                    community_shared=bool(self.public_login and self.db.get_source(source_id, community_only=True)),
+                    all_feeds_public=self.public_feeds,
                 )
 
             if path == "/statistics" and method == "GET":
@@ -1016,7 +1074,7 @@ class WebApp:
 
             return self._render(start_response, "error.html", status="404 Not Found", error="这个页面不存在，或地址已经发生变化。")
         except (FetcherError, ValueError) as exc:
-            if public_index or public_feed or public_pool:
+            if public_index or community or public_feed or public_pool:
                 return self._text(start_response, "订阅暂时不可用", "503 Service Unavailable")
             if method == "POST":
                 target = self._safe_return_path(environ)
@@ -1024,7 +1082,7 @@ class WebApp:
                 return self._redirect(start_response, target + sep + "error=" + quote(str(exc)))
             return self._render(start_response, "error.html", status="400 Bad Request", error=str(exc))
         except Exception as exc:
-            if public_index or public_feed or public_pool:
+            if public_index or community or public_feed or public_pool:
                 logger.exception("Public feed unavailable")
                 return self._text(start_response, "订阅暂时不可用", "503 Service Unavailable")
             print(f"[web-error] {exc}", file=sys.stderr)

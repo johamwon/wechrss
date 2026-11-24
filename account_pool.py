@@ -128,10 +128,21 @@ class AccountPool:
             "counts": counts, "page": page, "pages": pages,
         }
 
-    def candidates(self) -> list[WeReadCredentials]:
+    def contributor(self, owner: str) -> str:
+        if not owner:
+            return ""
+        with self._lock:
+            return next((item.public_id for item in self._read()
+                         if item.owner == owner and item.state != "expired"), "")
+
+    def candidates(self, *, after: str = "") -> list[WeReadCredentials]:
         with self._lock:
             accounts = [item for item in self._read() if item.state in {"valid", "pending"}]
         accounts.sort(key=lambda item: (item.state == "valid", item.checked_at), reverse=True)
+        if after:
+            valid = [item for item in accounts if item.state == "valid"]
+            valid.sort(key=lambda item: (item.record.vid <= after, item.record.vid))
+            accounts = valid + [item for item in accounts if item.state != "valid"]
         return [item.record for item in accounts]
 
     def status(self) -> dict:

@@ -35,6 +35,23 @@
 
 {% include "_feed_setup.html" %}
 
+{% if community_enabled %}
+<section class="card form-card library-section" aria-label="互助目录共享">
+  <h2>互助目录共享</h2>
+  {% if all_feeds_public %}
+  <p>当前实例已公开全部 RSS。要单独控制此公众号的可见性，请先关闭全部公开设置。</p>
+  {% else %}
+  <p>{{ '此公众号已公开，任何访客都可以订阅它的 RSS。' if community_shared else '公开后，任何访客都可订阅此公众号的 RSS。' }}</p>
+  <form method="post" action="/sources/{{ source.id }}/sharing">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="button" name="shared" value="{{ '0' if community_shared else '1' }}">
+      {{ '取消公开' if community_shared else '公开到互助目录' }}
+    </button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="card">
   <div class="card-header article-header">
     <div><h2>文章</h2><p>最近收录的 {{ articles|length }} 篇内容</p></div>

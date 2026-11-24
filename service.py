@@ -20,7 +20,7 @@ import requests
 
 from account_pool import AccountPool
 from weread_auth import RefreshExpiredError, RefreshRiskError, WeReadAuthClient, WeReadAuthError, WeReadCredentials
-from article_identity import ArticleIdentityError, resolve_article_identity
+from article_identity import ArticleIdentityError, resolve_article_identity, resolve_community_article
 
 from wechat_mp_fetcher import (
     Article,
@@ -90,6 +90,12 @@ CREATE TABLE IF NOT EXISTS feed_groups (
     name TEXT NOT NULL UNIQUE,
     token TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS community_sources (
+    source_id INTEGER PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+    contributor TEXT NOT NULL,
+    shared_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_community_contributor ON community_sources(contributor, shared_at);
 CREATE TABLE IF NOT EXISTS feed_group_sources (
     group_id INTEGER NOT NULL REFERENCES feed_groups(id) ON DELETE CASCADE,
     source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -364,38 +370,41 @@ class AppDB:
             conn.execute("UPDATE sources SET feed_verified_at=? WHERE id=?", (int(time.time()), source_id))
             conn.commit()
 
-    def list_sources(self) -> list[Source]:
+    def list_sources(self, *, community_only: bool = False, limit: int = -1, offset: int = 0) -> list[Source]:
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT s.*, (SELECT COUNT(*) FROM articles a WHERE a.book_id=s.book_id) AS article_count
-                FROM sources s ORDER BY s.created_at DESC
-                """
+                FROM sources s
+                WHERE (?=0 OR EXISTS(SELECT 1 FROM community_sources c WHERE c.source_id=s.id))
+                ORDER BY s.created_at DESC, s.id ASC LIMIT ? OFFSET ?
+                """, (community_only, limit, offset)
             ).fetchall()
         return [self._row_to_source(r) for r in rows]
 
-    def get_source(self, source_id: int) -> Source | None:
+    def get_source(self, source_id: int, *, community_only: bool = False) -> Source | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT s.*, (SELECT COUNT(*) FROM articles a WHERE a.book_id=s.book_id) AS article_count
                 FROM sources s WHERE s.id=?
-                """, (source_id,)
+                AND (?=0 OR EXISTS(SELECT 1 FROM community_sources c WHERE c.source_id=s.id))
+                """, (source_id, community_only)
             ).fetchone()
         return self._row_to_source(row) if row else None
 
     def add_source(self, *, source_value: str, name: str = "", interval_minutes: int = 360,
-                   fetch_content: bool = False, rss_limit: int = 50) -> Source:
+                   fetch_content: bool = False, rss_limit: int = 50, contributor: str = "") -> Source:
         source_value = source_value.strip()
-        if source_value.startswith("http://") or source_value.startswith("https://"):
+        if contributor or source_value.startswith(("http://", "https://")):
             try:
-                identity = resolve_article_identity(source_value)
+                identity = resolve_community_article(source_value) if contributor else resolve_article_identity(source_value)
             except ArticleIdentityError as exc:
                 raise FetcherError(str(exc)) from exc
             book_id = identity.book_id
-            article_url = source_value
+            article_url = identity.article_url if contributor else source_value
             if not name.strip() and identity.account_name:
-                name = identity.account_name
+                name = identity.account_name[:120] if contributor else identity.account_name
         else:
             book_id = normalize_book_id(source_value)
             article_url = ""
@@ -403,6 +412,24 @@ class AppDB:
         rss_limit = max(10, min(int(rss_limit), 500))
         now = int(time.time())
         with self.connect() as conn:
+            if contributor:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute(
+                    """SELECT s.*, c.source_id AS shared_id,
+                       (SELECT COUNT(*) FROM articles a WHERE a.book_id=s.book_id) AS article_count
+                       FROM sources s LEFT JOIN community_sources c ON c.source_id=s.id
+                       WHERE s.book_id=?""", (book_id,)
+                ).fetchone()
+                if existing:
+                    if existing["shared_id"] is None:
+                        raise FetcherError("这个公众号暂时无法通过互助目录添加")
+                    return self._row_to_source(existing)
+                additions = conn.execute(
+                    "SELECT COUNT(*) FROM community_sources WHERE contributor=? AND shared_at>=?",
+                    (contributor, now - 86400),
+                ).fetchone()[0]
+                if additions >= 10:
+                    raise FetcherError("每个账号每天最多新增 10 个共享订阅")
             try:
                 cur = conn.execute(
                     """
@@ -413,6 +440,8 @@ class AppDB:
                     (book_id, name.strip(), article_url, 1, 0, interval_minutes, rss_limit,
                      0, now, "never", "", now, now),
                 )
+                if contributor:
+                    conn.execute("INSERT INTO community_sources VALUES (?,?,?)", (cur.lastrowid, contributor, now))
                 conn.commit()
             except sqlite3.IntegrityError as exc:
                 raise FetcherError(f"公众号 {book_id} 已存在") from exc
@@ -420,6 +449,15 @@ class AppDB:
         result = self.get_source(source_id)
         assert result is not None
         return result
+
+    def set_source_shared(self, source_id: int, shared: bool) -> None:
+        with self.connect() as conn:
+            if shared:
+                conn.execute(
+                    "INSERT OR IGNORE INTO community_sources VALUES (?,?,?)", (source_id, "", int(time.time()))
+                )
+            else:
+                conn.execute("DELETE FROM community_sources WHERE source_id=?", (source_id,))
 
     def update_source(self, source_id: int, *, name: str, interval_minutes: int, fetch_content: bool,
                       rss_limit: int, enabled: bool | None = None) -> None:
@@ -719,6 +757,9 @@ class SyncService:
         self.auth_client = auth_client or WeReadAuthClient(timeout=timeout)
         self._lock = threading.Lock()
         self._account_lock = threading.Lock()
+        self._community_lock = threading.Lock()
+        self._last_community_request = 0.0
+        self._last_pool_vid = ""
         self.pool = AccountPool(credentials.path.with_suffix(".pool.json"), credentials) if account_pool else None
         self._pool_limiter = RateLimiter(self.request_interval)
         self._refresh_lock = threading.Lock()
@@ -745,6 +786,21 @@ class SyncService:
 
     def credential_status(self) -> dict:
         return self.pool.status() if self.pool is not None else self.credentials.status()
+
+    def add_community_source(self, value: str, owner: str) -> Source:
+        contributor = self.pool.contributor(owner) if self.pool is not None else ""
+        if not contributor:
+            raise FetcherError("请先扫码加入账号池，再添加公众号")
+        if not self._community_lock.acquire(blocking=False):
+            raise FetcherError("正在识别另一篇文章，请稍后重试")
+        try:
+            now = time.monotonic()
+            if now - self._last_community_request < 2:
+                raise FetcherError("添加请求过于频繁，请稍后重试")
+            self._last_community_request = now
+            return self.db.add_source(source_value=value, contributor=contributor)
+        finally:
+            self._community_lock.release()
 
     def remove_pool_account(self, vid: str) -> None:
         with self._account_lock:
@@ -866,9 +922,10 @@ class SyncService:
     def _request_from_pool(self, action):
         if self.account_issue() == "risk_control":
             raise RiskControlError("账号池已暂停，请处理验证后在设置中恢复")
-        candidates = self.pool.candidates()
+        candidates = self.pool.candidates(after=self._last_pool_vid)
         # Keep a single sync bounded even if many sessions have expired.
         for record in candidates[:3]:
+            self._last_pool_vid = record.vid
             try:
                 try:
                     self._pool_limiter.wait()
@@ -938,6 +995,14 @@ class SyncService:
                         if not existed:
                             new_count += 1
                         save_article(conn, article)
+                    if not source.name:
+                        author = next((article.author.strip() for article in articles if article.author.strip()), "")
+                        if author:
+                            conn.execute(
+                                """UPDATE sources SET name=? WHERE id=? AND name=''
+                                   AND EXISTS(SELECT 1 FROM community_sources WHERE source_id=?)""",
+                                (author[:120], source.id, source.id),
+                            )
                     conn.commit()
                 result = SyncResult(source.id, len(articles), new_count, 0, "ok", "")
             except RiskControlError as exc:

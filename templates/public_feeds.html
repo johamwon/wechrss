@@ -3,27 +3,69 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>公开订阅 · WeRSS</title>
+  <title>{{ '公众号互助订阅' if show_pool else '公开订阅' }} · WeRSS</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js?v={{ app_version }}-community" defer></script>
 </head>
 <body>
 <main class="shell" id="main-content">
   <section class="page-heading heading-with-action">
-    <div><h1>公众号公开订阅</h1><p>将 RSS 链接添加到阅读器，查看已同步的文章。</p></div>
-    <a class="button" href="/admin/login">管理员入口</a>
-    {% if show_pool %}<a class="button primary" href="/account-pool" target="_blank" rel="noopener">共享账号池</a>{% endif %}
+    <div><h1>{{ '公众号互助订阅' if show_pool else '公众号公开订阅' }}</h1>
+      <p>{{ '扫码贡献账号后即可添加公众号。共享目录里的 RSS 地址可直接订阅。' if show_pool else '将 RSS 链接添加到阅读器，查看已同步的文章。' }}</p>
+    </div>
+    <nav class="library-actions" aria-label="平台入口">
+      {% if show_pool %}<a class="button" href="/account-pool">{{ '查看账号池' if contributor else '扫码加入账号池' }}</a>{% endif %}
+      <a class="button" href="/admin/login">管理员入口</a>
+    </nav>
   </section>
+  {% if paused %}<p class="inline-alert warn" role="status">平台暂时限制同步。你仍可添加公众号或订阅 RSS，恢复后系统会继续获取文章。</p>{% endif %}
+  {% if added %}
+  <p class="flash success" role="status">
+    {{ added.name or added.book_id }} 已在共享目录。
+    <a href="{{ base_url }}/public-feeds/{{ added.id }}.xml">打开 RSS</a>
+    {% if not added.last_success_at %} · 等待首次同步{% endif %}
+  </p>
+  {% endif %}
+  {% if contributor %}
+  <form class="card form-card library-section" method="post" action="/community" data-loading-form data-loading-label="识别中…">
+    <h2>添加公众号</h2>
+    {% if error %}<p class="inline-alert warn" role="alert">{{ error }}</p>{% endif %}
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="field-group">
+      <label for="community-source">微信文章链接</label>
+      <input id="community-source" name="source" type="url" value="{{ value }}"
+             maxlength="4096" required placeholder="https://mp.weixin.qq.com/s/…">
+      <p class="field-help">粘贴该公众号的一篇公开文章。添加后，所有访客都可以订阅这个公众号的 RSS。</p>
+    </div>
+    <button class="button primary" type="submit">添加到共享目录</button>
+  </form>
+  {% endif %}
   <section class="card form-card" aria-label="公开订阅列表">
+    <h2>共享订阅目录</h2>
     {% for source in sources %}
     <div class="setting-row">
-      <div><strong>{{ source.name or source.book_id }}</strong><p>{{ source.article_count }} 篇文章</p></div>
-      <a class="button" href="{{ base_url }}/public-feeds/{{ source.id }}.xml">RSS 链接</a>
+      <div><strong>{{ source.name or source.book_id }}</strong>
+        <p>{{ source.article_count }} 篇文章{% if not source.last_success_at %} · 等待首次同步{% endif %}</p>
+      </div>
+      {% set url = base_url ~ '/public-feeds/' ~ source.id ~ '.xml' %}
+      <div class="form-actions left">
+        <a class="button" href="{{ url }}">RSS 链接</a>
+        <button class="button" type="button" data-copy="{{ url }}">复制</button>
+      </div>
     </div>
     {% else %}
     <p>暂时没有公开订阅。</p>
     {% endfor %}
+    {% if page > 1 or has_next %}
+    <nav class="library-actions" aria-label="订阅分页">
+      {% if page > 1 %}<a class="button" href="{{ catalog_path }}?page={{ page - 1 }}">上一页</a>{% endif %}
+      <span>第 {{ page }} 页</span>
+      {% if has_next %}<a class="button" href="{{ catalog_path }}?page={{ page + 1 }}">下一页</a>{% endif %}
+    </nav>
+    {% endif %}
   </section>
 </main>
+<div class="toast" role="status"></div>
 </body>
 </html>
